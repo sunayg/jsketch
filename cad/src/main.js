@@ -11,6 +11,10 @@ import { techSheetHtml, gemMapSvg } from "./techsheet.js";
 import { sizeRun, sizeRange, bundle, stlBytes } from "./export.js";
 import { importFile } from "./importers.js";
 import { parseSize, sizeFromDiameter } from "./sizes.js";
+import { sculptKey } from "./build.js";
+import { putAsset } from "./assets-idb.js";
+import { assetId, readMesh } from "./meshio.js";
+import { innerDiameterOf } from "./sculpts.js";
 
 const $ = (id) => document.getElementById(id);
 const KEY = "jewelscript.cad.v1"; // last valid script
@@ -34,7 +38,12 @@ let selected = null;
 
 // ---------- history (undo/redo over script text) ----------
 const history = { past: [], future: [], last: null, batching: false };
+const HISTORY = "jewelscript.history";
+function saveHistory() {
+  store.set(JSON.stringify({ past: history.past.slice(-30), last: history.last }), HISTORY);
+}
 function remember(text) {
+  queueMicrotask(saveHistory);
   // during a paint drag every dab rebuilds, but the whole drag is one undo step
   if (history.batching && history.batchStarted) {
     history.last = text;
@@ -102,11 +111,52 @@ function pumpExact() {
   const text = exactState.queued;
   exactState.queued = null;
   exactState.busy = true;
-  worker.postMessage({ id: ++exactState.seq, text });
+  worker.postMessage({ kind: "exact", id: ++exactState.seq, text });
   exactState.inflight = text;
+}
+
+// Sculpts are prepared (repaired, fitted) in the worker once per file and
+// options; until then the design shows "preparing…".
+const sculptCache = new Map(); // full key -> { geometry, info } | { pending } | { error }
+const sculptFullKey = (d, sc) => `${sculptKey(sc)}|${sc.fit === "ring" ? innerDiameterOf(d).toFixed(4) : ""}`;
+let sculptSeq = 0;
+const sculptJobs = new Map();
+function sculptsFor(d) {
+  const out = new Map();
+  for (const sc of d.sculpts) {
+    const key = sculptFullKey(d, sc);
+    if (!sculptCache.has(key)) {
+      if (!worker) sculptCache.set(key, { error: "sculpts need the solid kernel, which did not load" });
+      else {
+        sculptCache.set(key, { pending: true });
+        const id = ++sculptSeq;
+        sculptJobs.set(id, key);
+        worker.postMessage({ kind: "sculpt", id, sculpt: sc, innerDiameter: innerDiameterOf(d) });
+        say(`Preparing sculpt ${sc.id}…`);
+      }
+    }
+    out.set(sculptKey(sc), sculptCache.get(key));
+  }
+  return out;
+}
+function onSculptReady(msg) {
+  const key = sculptJobs.get(msg.id);
+  sculptJobs.delete(msg.id);
+  if (!key) return;
+  if (msg.error) sculptCache.set(key, { error: msg.error });
+  else {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(msg.positions, 3));
+    g.computeVertexNormals();
+    g.userData.thickness = msg.thickness;
+    sculptCache.set(key, { geometry: g, info: msg.info });
+    say(`Sculpt ready in ${(msg.info.ms / 1000).toFixed(1)} s (${msg.info.method === "voxel" ? "rebuilt as a solid" : "already a solid"}, ${msg.info.triangles} triangles).`);
+  }
+  rebuild({ record: false });
 }
 if (worker) {
   worker.onmessage = (e) => {
+    if (e.data.kind === "sculpt") return onSculptReady(e.data);
     exactState.busy = false;
     const text = exactState.inflight;
     if (!e.data.error && text === textarea.value && model) {
@@ -146,7 +196,7 @@ function ensureExact() {
 
 // ---------- viewer and tools ----------
 const nextId = (prefix) => {
-  const ids = new Set([...design.accents, ...design.strokes, ...design.regions].map((o) => o.id));
+  const ids = new Set(Object.values(LISTS).flatMap((k) => design[k].map((o) => o.id)));
   let i = 1;
   while (ids.has(`${prefix}${i}`)) i++;
   return `${prefix}${i}`;
@@ -164,6 +214,7 @@ const simplify = (pts, maxPts = 40) => {
 };
 const paveDia = () => (typeof design.pave.dia === "number" ? design.pave.dia : 1.3);
 
+const surfaceDrag = { id: null };
 const viewer = createViewer($("viewport"), {
   onPaint: (dabs) => {
     if (!needValid()) return;
@@ -197,7 +248,25 @@ const viewer = createViewer($("viewport"), {
     commit();
     say(`Filled ${id} across the band (${(2 * span).toFixed(1)} mm long).`);
   },
-  onMeasure: ({ mm }) => say(mm == null ? "Measure: click a second point." : `Distance: ${mm.toFixed(2)} mm (${lengthIn(mm, prefs.length).toFixed(prefs.length === "in" ? 3 : 2)} ${prefs.length})`),
+  // painting on a sculpt: one surfpave per drag, dabs in 3D
+  onSurfacePaint: (on, dabs) => {
+    if (!needValid()) return;
+    history.batching = true;
+    let sp = design.surfpaves.find((x) => x.id === surfaceDrag.id);
+    if (!sp) {
+      sp = { id: nextId("surf"), on, r: viewer.brush, dia: "auto", gap: 0.12, setting: "bead", bead: 0.35, mirror: "no", pts: [], min: 0.9, max: 1.5 };
+      design.surfpaves.push(sp);
+      surfaceDrag.id = sp.id;
+    }
+    sp.pts.push(...dabs.map((p) => p.map((v) => Math.round(v * 100) / 100)));
+    commit();
+  },
+  onSurfaceEnd: () => {
+    surfaceDrag.id = null;
+    history.batching = false;
+    history.batchStarted = false;
+  },
+  onMeasure: ({ mm }) => say(mm == null ? "Measure: click a second point." : `Distance: ${mm.toFixed(2)} mm${prefs.length === "mm" ? "" : ` (${lengthIn(mm, prefs.length).toFixed(prefs.length === "in" ? 3 : 2)} ${prefs.length})`}`),
 });
 
 const TOOL_HINTS = {
@@ -207,6 +276,7 @@ const TOOL_HINTS = {
   outline: "Outline: drag a closed loop on the band to fill it.",
   wand: "Wand: click the band to fill across its full width (span sets the length).",
   measure: "Measure: click two points on the model.",
+  surface: "Surface: drag over a sculpt to fill it with pavé (auto-sized). Orbit is paused.",
 };
 function setTool(t) {
   for (const b of document.querySelectorAll("[data-tool]")) b.setAttribute("aria-pressed", String(b.dataset.tool === t));
@@ -241,7 +311,7 @@ function rebuild({ record = true } = {}) {
   if (record) remember(textarea.value);
   design = d;
   const t0 = performance.now();
-  model = build(design);
+  model = build(design, { sculpts: sculptsFor(design) });
   viewer.setModel(model);
   lastReport = report(model);
   $("rebuild").textContent = `Rebuilt in ${Math.round(performance.now() - t0)} ms`;
@@ -269,7 +339,7 @@ function commit() {
 function showFallbackModel() {
   const saved = parse(store.get() || "");
   design = saved.errors.length ? defaultDesign() : saved.design;
-  model = build(design);
+  model = build(design, { sculpts: sculptsFor(design) });
   viewer.setModel(model);
   lastReport = report(model);
   renderSheet(lastReport);
@@ -402,9 +472,8 @@ function renderParams() {
   }
   root.append(
     selField("Metal", "ring", design.ring, "metal", Object.keys(METALS), (k) => METALS[k].label),
-    numField("Band width (mm)", "shank", design.shank, "width", 0.1),
-    numField("Band thickness (mm)", "shank", design.shank, "thickness", 0.1),
-    selField("Profile", "shank", design.shank, "profile", PROFILES),
+    ...(design.shank.profile !== "none" ? [numField("Band width (mm)", "shank", design.shank, "width", 0.1), numField("Band thickness (mm)", "shank", design.shank, "thickness", 0.1)] : []),
+    selField("Band profile", "shank", design.shank, "profile", PROFILES, (o) => (o === "none" ? "none (sculpt is the ring)" : o)),
     selField("Centre setting", "stone", design.stone, "setting", SETTINGS, (o) => (o === "none" ? "none (plain band)" : o)),
   );
   if (design.stone.setting !== "none") {
@@ -523,10 +592,11 @@ function renderSheet(r) {
     row("Metal", el("span", { textContent: `${r.metal.name} (${fx(r.metal.density, 2)} g/cm³)` })),
     row(r.metal.exact ? "Weight (exact)" : "Weight (estimate)", el("strong", { textContent: `${fx(weightIn(r.metal.weightG, prefs.weight), prefs.weight === "g" ? 2 : 3)} ${WEIGHT[prefs.weight].label}` })),
     row("Inside diameter", el("span", { textContent: `${fx(lengthIn(r.innerDiameter, prefs.length), prefs.length === "in" ? 3 : 2)} ${prefs.length}` })),
-    row("Thinnest shank wall", el("span", { textContent: `${fx(lengthIn(r.minWall.shank, prefs.length), prefs.length === "in" ? 3 : 2)} ${prefs.length}` })),
+    ...(r.minWall.shank != null ? [row("Thinnest band wall", el("span", { textContent: `${fx(lengthIn(r.minWall.shank, prefs.length), prefs.length === "in" ? 3 : 2)} ${prefs.length}` }))] : []),
+    ...Object.entries(r.sculpts || {}).filter(([, i]) => i.minWall).map(([id, i]) => row(`Thinnest wall, ${id}`, el("span", { textContent: `${fx(lengthIn(i.minWall.mm, prefs.length), prefs.length === "in" ? 3 : 2)} ${prefs.length}` }))),
     ...(r.centre ? [row("Centre stone", el("span", { textContent: `${r.centre.cut} ${fx(r.centre.dia, 1)}×${fx(r.centre.length, 1)} mm` }))] : []),
     row("Stones", el("span", { textContent: `${r.stoneCount} · ${fx(gemIn(r.totalCt, prefs.gem), gd)} ${GEM_WEIGHT[prefs.gem].label} est.` })),
-    ...(r.paveDia ? [row("Brushed pavé size", el("span", { textContent: `${fx(r.paveDia, 1)} mm${design.pave.dia === "auto" ? " (auto)" : ""}` }))] : []),
+    ...(r.paveDia && design.paint.length ? [row("Brushed pavé size", el("span", { textContent: `${fx(r.paveDia, 1)} mm${design.pave.dia === "auto" ? " (auto)" : ""}` }))] : []),
     ...(r.shrink ? [row("Cast shrinkage", el("span", { textContent: `+${r.shrink}% on export` }))] : []),
     table,
     el("h2", { textContent: "Checks" }),
@@ -570,7 +640,11 @@ function updateExportForm() {
   }[f];
 }
 async function runExport() {
-  const shrink = Math.max(0, Math.min(5, +$("ex-shrink").value || 0));
+  const shrink = +$("ex-shrink").value || 0;
+  if (!(shrink >= 0 && shrink <= 5)) {
+    say("Shrinkage compensation must be between 0 and 5 %.");
+    return false;
+  }
   if (shrink !== (design.rule.shrink ?? 0)) {
     setField(design, "rule", "shrink", shrink);
     commit();
@@ -591,10 +665,9 @@ async function runExport() {
     else if (f === "3mf") download(viewer.export3mf(m), `${slug()}.3mf`);
     else if (f === "glb") download(await viewer.exportGlb(m), `${slug()}.glb`);
     else if (f === "obj") download(viewer.exportObj(m), `${slug()}.obj`);
-    else if (f === "bundle") download(new Blob([bundle(design, m)], { type: "application/zip" }), `${slug()}-bundle.zip`);
+    else if (f === "bundle") download(new Blob([bundle(design, m, textarea.value)], { type: "application/zip" }), `${slug()}-bundle.zip`);
     else if (f === "sizerun") {
       const from = +$("ex-from").value, to = +$("ex-to").value, step = +$("ex-step").value;
-      if (!(step > 0) || to < from || (to - from) / step > 40) return say("Size run: check From, To and Step (at most 40 sizes).");
       download(new Blob([sizeRun(design, sizeRange($("ex-sys").value, from, to, step), q)], { type: "application/zip" }), `${slug()}-size-run.zip`);
     }
     say(`Exported ${f.toUpperCase()}.`);
@@ -634,10 +707,10 @@ function renderGallery() {
           return replaceText(it.text, `Opened ${it.name}.`);
         } else {
           if (!needValid()) return;
-          const next = `${textarea.value.replace(/\s*$/, "")}\n${it.text}\n`;
-          const p = parse(next);
-          if (p.errors.length) return say(`Cannot insert: ${p.errors[0].message} (an object with that id may exist).`);
-          textarea.value = next;
+          const res = insertComponent(it.text);
+          if (res.error) return say(`Cannot insert: ${res.error}`);
+          textarea.value = res.text;
+          if (res.note) setTimeout(() => say(res.note), 0);
         }
         rebuild();
         $("gallery-dialog").close();
@@ -648,15 +721,86 @@ function renderGallery() {
   );
 }
 
+// ---------- sculpt import ----------
+let pendingImport = null;
+function openSculptDialog(file, ref) {
+  pendingImport = { file, ref };
+  $("sc-file").textContent = ref.message;
+  $("sc-fit").checked = true;
+  $("sc-whole").checked = true;
+  $("sculpt-dialog").showModal();
+}
+async function addSculpt() {
+  const { file, ref } = pendingImport;
+  if (!needValid()) return;
+  const { bytes, ext } = ref;
+  const id = await assetId(bytes);
+  await putAsset(id, { name: file.name, ext, bytes });
+  const num = (elId) => +$(elId).value || 0;
+  const sc = { id: nextId("sculpt"), src: id, fit: $("sc-fit").checked ? "ring" : "none", repair: $("sc-repair").value };
+  if (ref.metres && sc.fit === "none") sc.scale = 1000; // glTF metres -> mm
+  if (num("sc-close")) sc.close = num("sc-close");
+  if (num("sc-smooth")) sc.smooth = num("sc-smooth");
+  if (num("sc-hollow")) sc.hollow = num("sc-hollow");
+  if ($("sc-sym").value !== "none") sc.symmetrize = $("sc-sym").value;
+  design.sculpts.push(sc);
+  if ($("sc-whole").checked) {
+    setField(design, "shank", "profile", "none");
+    setField(design, "stone", "setting", "none");
+    design.halo = null;
+  }
+  commit();
+  say(`Added sculpt ${sc.id}; preparing it (repair and fit can take a few seconds)…`);
+}
+
+// A component's lines merged into the script: a halo (or other single
+// command) replaces the existing one; a clashing id gets a number added.
+function insertComponent(componentText) {
+  const base = current();
+  let lines = componentText.split("\n");
+  const notes = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(\w+)\b(.*)$/.exec(lines[i].trim());
+    if (!m) continue;
+    const [, cmd] = m;
+    if (cmd in LISTS) {
+      const idm = /\bid=([\w-]+)/.exec(lines[i]);
+      const taken = new Set(Object.values(LISTS).flatMap((k) => base.design[k].map((o) => o.id)));
+      if (idm && taken.has(idm[1])) {
+        let n = 2;
+        while (taken.has(`${idm[1]}${n}`)) n++;
+        lines[i] = lines[i].replace(`id=${idm[1]}`, `id=${idm[1]}${n}`);
+        notes.push(`named it ${idm[1]}${n}`);
+      }
+    }
+  }
+  let text = textarea.value.replace(/\s*$/, "");
+  for (const l of lines) {
+    const cmd = l.trim().split(/\s+/)[0];
+    const existing = text.split("\n").findIndex((x) => x.trim().split(/\s+/)[0] === cmd);
+    if (["halo", "pave", "rule"].includes(cmd) && existing >= 0) {
+      const all = text.split("\n");
+      all[existing] = l;
+      text = all.join("\n");
+      notes.push(`replaced the existing ${cmd}`);
+    } else text += `\n${l}`;
+  }
+  text += "\n";
+  const p = parse(text);
+  if (p.errors.length) return { error: p.errors[0].message };
+  return { text, note: notes.length ? `Inserted; ${notes.join(", ")}.` : "" };
+}
+
 // ---------- assistant ----------
 function runAssistant(apply) {
   const text = $("assistant-input").value.trim();
-  if (!text) return;
-  if (!needValid()) return;
-  const r = interpret(text, design);
   const out = $("assistant-out");
+  if (!text) return out.replaceChildren();
+  if (!current().ok) return out.replaceChildren(el("p", { className: "warn-note", textContent: "The script has errors: fix them (or Undo) before using the assistant." }));
+  const r = interpret(text, design);
   out.replaceChildren(
     el("p", { textContent: r.changes.length ? `Changes: ${r.changes.join("; ")}.` : "No changes recognised." }),
+    ...r.notes.map((n) => el("p", { className: "warn-note", textContent: n })),
     ...(r.ignored.length ? [el("p", { className: "muted", textContent: `Not understood: ${r.ignored.join(", ")}` })] : []),
   );
   if (apply && r.changes.length) {
@@ -680,7 +824,9 @@ function commands() {
     { label: "Fit view", run: () => viewer.fit() },
     { label: "Layout: 1 view", run: () => setLayout(1) },
     { label: "Layout: 4 views", run: () => setLayout(4) },
-    { label: "Clear brushed pavé", run: () => $("clear-paint").click() },
+    { label: "Clear band pavé (brush, strokes, regions)", run: () => $("clear-paint").click() },
+    { label: "Remove reference mesh", run: () => (viewer.setReference(null), say("Reference removed.")) },
+    { label: "Tool: surface (paint on a sculpt)", run: () => setTool("surface") },
     { label: "Show objects", run: () => showTab("objects") },
     { label: "Show script", run: () => showTab("script") },
     ...["iso", "top", "front", "right"].map((v) => ({ label: `View: ${v}`, run: () => viewer.setView(v) })),
@@ -785,11 +931,25 @@ $("assistant-apply").addEventListener("click", (e) => {
   runAssistant(true);
 });
 $("open-export").addEventListener("click", openExport);
+$("sc-add").addEventListener("click", async (e) => {
+  e.preventDefault();
+  $("sculpt-dialog").close();
+  try {
+    await addSculpt();
+  } catch (err) {
+    say(`Import failed: ${err.message}`);
+  }
+});
+$("sc-ref").addEventListener("click", (e) => {
+  e.preventDefault();
+  $("sculpt-dialog").close();
+  viewer.setReference(pendingImport.ref.object);
+  say(`${pendingImport.ref.message} Shown for comparison only (remove it from the command palette).`);
+});
 $("ex-format").addEventListener("change", updateExportForm);
 $("ex-go").addEventListener("click", async (e) => {
   e.preventDefault();
-  await runExport();
-  $("export-dialog").close();
+  if ((await runExport()) !== false) $("export-dialog").close();
 });
 $("open-sheet").addEventListener("click", openSheet);
 $("ts-preview").addEventListener("click", (e) => (e.preventDefault(), previewSheet()));
@@ -825,8 +985,8 @@ $("import").addEventListener("change", async (e) => {
     if (r.kind === "script") {
       replaceText(r.text, `Opened ${f.name}.`);
     } else if (r.kind === "reference") {
-      viewer.setReference(r.object);
-      say(r.message);
+      // a mesh: ask whether it is part of the design (a sculpt) or a reference
+      openSculptDialog(f, r);
     } else if (r.kind === "region") {
       if (!needValid()) return;
       design.regions.push({ id: nextId("svg"), ...r.region });
@@ -859,7 +1019,16 @@ if (theme === "dark" || theme === "light") document.documentElement.dataset.them
 // Reopen whatever was in the editor, even with errors; the viewport then shows
 // the last valid design until the errors are fixed.
 textarea.value = store.get(DRAFT) || store.get() || serialize(defaultDesign());
-rebuild();
 history.past = [];
-history.last = textarea.value;
+history.last = null;
+try {
+  const h = JSON.parse(store.get(HISTORY) || "null");
+  if (h && Array.isArray(h.past) && h.past.every((x) => typeof x === "string")) {
+    history.past = h.past;
+    history.last = h.last === textarea.value ? h.last : textarea.value;
+    if (h.last !== textarea.value && typeof h.last === "string") history.past.push(h.last);
+  }
+} catch {}
+history.last ??= textarea.value;
+rebuild({ record: false });
 window.__cad = { viewer, ensureExact, get design() { return design; }, get model() { return model; }, get report() { return lastReport; } };

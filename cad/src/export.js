@@ -7,7 +7,7 @@ import * as THREE from "three";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
 import { build } from "./build.js";
 import { serialize } from "./script.js";
-import { parseSize, formatSize } from "./sizes.js";
+import { parseSize, formatSize, RANGE } from "./sizes.js";
 
 const flat = (g) => {
   const out = g.index ? g.toNonIndexed() : g.clone();
@@ -108,19 +108,98 @@ export function sizeRun(design, sizes, quality = "standard") {
   return zipStore(files);
 }
 
-export function sizeRange(system, from, to, step = 0.5) {
+// Sizes from..to in a system, only those the language accepts. Throws on a
+// reversed or empty range, or more than `max` sizes.
+export function sizeRange(system, from, to, step = 0.5, max = 40) {
+  if (!(step > 0)) throw new Error("size step must be above 0");
+  if (to < from) throw new Error(`size range ends (${to}) before it starts (${from})`);
+  const [lo, hi] = RANGE[system] || [];
+  if (lo === undefined) throw new Error(`unknown size system ${system}`);
   const out = [];
-  for (let n = from; n <= to + 1e-9; n += step) out.push(`${system}${+n.toFixed(2)}`);
+  for (let n = from; n <= to + 1e-9; n += step) if (n >= lo - 1e-9 && n <= hi + 1e-9) out.push(`${system}${+n.toFixed(2)}`);
+  if (!out.length) throw new Error(`no ${system} sizes between ${from} and ${to} (${system} runs ${lo}-${hi})`);
+  if (out.length > max) throw new Error(`${out.length} sizes is more than ${max} per run`);
   return out;
 }
 
 // Portable bundle: the source script plus meshes, so it opens anywhere.
-export function bundle(design, model) {
+// `text` is the script as written (comments and all); falls back to canonical.
+export function bundle(design, model, text = null) {
   return zipStore({
-    "design.jws": serialize(design),
+    "design.jws": text ?? serialize(design),
     "metal.stl": stlBytes(model, "metal"),
     "stones.stl": stlBytes(model, "stones"),
     "model.3mf": to3mf(model),
     "README.txt": "JewelScript bundle: design.jws is the editable source; the meshes are in millimetres.\n",
   });
+}
+
+// ---- GLB and OBJ without a browser (CLI, MCP) ----
+const meshParts = (model) => [["metal", bakeGeometry(model, "metal"), [0.85, 0.75, 0.45, 1], 1], ["stones", bakeGeometry(model, "stones"), [0.92, 0.96, 1, 1], 0]].filter(([, g]) => g);
+
+// Binary glTF: one node per part, positions and normals, scaled mm -> m.
+export function glbBytes(model) {
+  const parts = meshParts(model);
+  const chunks = [];
+  let offset = 0;
+  const json = { asset: { version: "2.0", generator: "JewelScript CAD" }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ name: "piece", matrix: [0.001, 0, 0, 0, 0, 0.001, 0, 0, 0, 0, 0.001, 0, 0, 0, 0, 1], children: [] }], meshes: [], materials: [], accessors: [], bufferViews: [], buffers: [] };
+  for (const [name, g, color, metallic] of parts) {
+    const geo = g.index ? g.toNonIndexed() : g;
+    geo.computeVertexNormals();
+    const pos = Float32Array.from(geo.attributes.position.array);
+    const nrm = Float32Array.from(geo.attributes.normal.array);
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < pos.length; i += 3) for (let k = 0; k < 3; k++) {
+      min[k] = Math.min(min[k], pos[i + k]);
+      max[k] = Math.max(max[k], pos[i + k]);
+    }
+    const view = (arr) => {
+      json.bufferViews.push({ buffer: 0, byteOffset: offset, byteLength: arr.byteLength, target: 34962 });
+      chunks.push(new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength));
+      offset += arr.byteLength;
+      return json.bufferViews.length - 1;
+    };
+    json.accessors.push({ bufferView: view(pos), componentType: 5126, count: pos.length / 3, type: "VEC3", min, max });
+    json.accessors.push({ bufferView: view(nrm), componentType: 5126, count: nrm.length / 3, type: "VEC3" });
+    json.materials.push({ name, pbrMetallicRoughness: { baseColorFactor: color, metallicFactor: metallic, roughnessFactor: metallic ? 0.25 : 0.05 } });
+    json.meshes.push({ name, primitives: [{ attributes: { POSITION: json.accessors.length - 2, NORMAL: json.accessors.length - 1 }, material: json.materials.length - 1 }] });
+    json.nodes.push({ name, mesh: json.meshes.length - 1 });
+    json.nodes[0].children.push(json.nodes.length - 1);
+  }
+  json.buffers.push({ byteLength: offset });
+  let jsonText = JSON.stringify(json);
+  while (jsonText.length % 4) jsonText += " ";
+  const jb = new TextEncoder().encode(jsonText);
+  const binLen = Math.ceil(offset / 4) * 4;
+  const out = new Uint8Array(12 + 8 + jb.length + 8 + binLen);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, 0x46546c67, true);
+  dv.setUint32(4, 2, true);
+  dv.setUint32(8, out.length, true);
+  dv.setUint32(12, jb.length, true);
+  dv.setUint32(16, 0x4e4f534a, true);
+  out.set(jb, 20);
+  dv.setUint32(20 + jb.length, binLen, true);
+  dv.setUint32(24 + jb.length, 0x004e4942, true);
+  let o = 28 + jb.length;
+  for (const c of chunks) {
+    out.set(c, o);
+    o += c.length;
+  }
+  return out;
+}
+
+// OBJ text with named objects (mm).
+export function objText(model) {
+  const lines = ["# JewelScript CAD, units: mm"];
+  let base = 1;
+  for (const [name, g] of meshParts(model)) {
+    const geo = g.index ? g.toNonIndexed() : g;
+    const p = geo.attributes.position.array;
+    lines.push(`o ${name}`);
+    for (let i = 0; i < p.length; i += 3) lines.push(`v ${+p[i].toFixed(5)} ${+p[i + 1].toFixed(5)} ${+p[i + 2].toFixed(5)}`);
+    for (let i = 0; i < p.length / 3; i += 3) lines.push(`f ${base + i} ${base + i + 1} ${base + i + 2}`);
+    base += p.length / 3;
+  }
+  return new TextEncoder().encode(lines.join("\n") + "\n");
 }

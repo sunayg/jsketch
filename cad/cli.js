@@ -3,8 +3,8 @@
 //   cli.js validate <file|->                    parse only
 //   cli.js check <file|->                       parse, build and run checks
 //   cli.js measure <file|->                     full report
-//   cli.js render <file|-> --out dir [--views iso,top,front,side] [--size 512]
-//   cli.js export <file|-> --format stl|stl-stones|3mf|bundle|sizerun --out file
+//   cli.js render <file|-> --out dir [--views iso,top,front,side] [--size 64-1024]
+//   cli.js export <file|-> --format stl|stl-stones|3mf|glb|obj|bundle|sizerun --out file
 //            [--quality draft|standard|fine] [--part id] [--sizes US5-8:0.5]
 // Exit codes: 0 ok, 1 script has errors, 2 usage or file problem, 3 checks failed.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -54,7 +54,7 @@ try {
     if (!out) done({ ok: false, error: "render needs --out <directory>" }, 2);
     mkdirSync(out, { recursive: true });
     const views = opt("views", "iso,top").split(",");
-    const files = (await render(text, { views, size: Math.min(2048, Math.max(64, +opt("size", 512))) })).map(({ view, png }) => {
+    const files = (await render(text, { views, size: +opt("size", 512) })).map(({ view, png }) => {
       const path = join(out, `${view}.png`);
       writeFileSync(path, png);
       return path;

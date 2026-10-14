@@ -108,3 +108,11 @@ details pre { white-space:pre-wrap; }
   :root:not([data-theme="light"]) { --bg:#141517; --panel:#1c1e21; --ink:#e8e9eb; --muted:#9a9fa7; --line:#32353a; --accent:#5b9bff; --bad:#ff7b72; --warn:#d29922; --ok:#3fb950; }
 }
 @media (max-width: 1000px) { #app { grid-template-columns:1fr; } }
+
+/* ---- round 2 polish ---- */
+[hidden] { display:none !important; }
+.row select { max-width:200px; }
+:root[data-theme="dark"] { --accent:#2f6fde; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --accent:#2f6fde; } }
+.check.info { color:var(--muted); }
+.gemmap { width:100%; }

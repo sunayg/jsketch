@@ -66,8 +66,9 @@ export function modelObjects(model, { mode = "shaded", highlight = null, stoneCa
       geometry = part.geometry.index ? part.geometry.toNonIndexed() : part.geometry.clone();
       const p = geometry.attributes.position;
       const colors = new Float32Array(p.count * 3);
+      const perVertex = part.geometry.userData?.thickness; // sculpts: measured per vertex
       for (let i = 0; i < p.count; i++) {
-        const t = part.name === "shank" ? shankThicknessAt(d, model.geom, p.getZ(i)) : part.thickness ?? (part.bead ? Infinity : Infinity);
+        const t = perVertex ? perVertex[i] : part.name === "shank" ? shankThicknessAt(d, model.geom, p.getZ(i)) : part.thickness ?? Infinity;
         const c = Number.isFinite(t) ? heatColor(t, d.rule.min_wall) : new THREE.Color("#9aa0a6");
         colors.set([c.r, c.g, c.b], i * 3);
       }
@@ -84,7 +85,7 @@ export function modelObjects(model, { mode = "shaded", highlight = null, stoneCa
     if (highlight && part.obj === highlight) mat.emissive?.set("#1f6feb"), mat.emissiveIntensity !== undefined && (mat.emissiveIntensity = 0.35);
     const mesh = new THREE.Mesh(geometry, mat);
     mesh.name = part.name;
-    mesh.userData = { obj: part.obj, kind: "metal" };
+    mesh.userData = { obj: part.obj, kind: "metal", sculpt: !!part.sculpt };
     if (mode === "edges") {
       mesh.material.visible = false;
       const lines = new THREE.LineSegments(new THREE.EdgesGeometry(part.geometry, 25), new THREE.LineBasicMaterial({ color: "#3c4043" }));
@@ -215,6 +216,17 @@ export function createViewer(container, handlers = {}) {
     }
     return { s: +s.toFixed(2), w: +w.toFixed(2), point: h.point, normal: new THREE.Vector3(h.point.x, h.point.y, 0).normalize() };
   };
+  // a point on a sculpt's surface, with its sculpt id
+  const hitSculpt = (e) => {
+    pick(e);
+    const sculptMeshes = [];
+    holder.traverse((o) => o.isMesh && o.userData.sculpt && sculptMeshes.push(o));
+    const h = ray.intersectObjects(sculptMeshes, false)[0];
+    if (!h) return null;
+    const n = h.face.normal.clone().transformDirection(h.object.matrixWorld);
+    return { obj: h.object.userData.obj, point: h.point, normal: n };
+  };
+  let lastSurf = null;
   const hitAny = (e) => {
     pick(e);
     return ray.intersectObjects(holder.children, true).find((x) => x.object.visible !== false)?.point || null;
@@ -227,6 +239,26 @@ export function createViewer(container, handlers = {}) {
   const dom = renderer.domElement;
   dom.addEventListener("pointermove", (e) => {
     if (tool === "orbit" || tool === "measure") return;
+    if (tool === "surface") {
+      const h = hitSculpt(e);
+      brush.visible = !!h;
+      if (!h) return;
+      brush.position.copy(h.point).addScaledVector(h.normal, 0.05);
+      brush.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), h.normal);
+      brush.scale.setScalar(brushR);
+      if (!down || (lastSurf && lastSurf.obj !== h.obj)) return;
+      const step = brushR * 0.6;
+      if (lastSurf && lastSurf.point.distanceTo(h.point) < step) return;
+      // fill in dabs between pointer samples (straight line; the build
+      // projects them onto the surface)
+      const dabs = [];
+      const from = lastSurf?.point || h.point;
+      const n = lastSurf ? Math.max(1, Math.ceil(from.distanceTo(h.point) / step)) : 1;
+      for (let i = 1; i <= n; i++) dabs.push(from.clone().lerp(h.point, lastSurf ? i / n : 1).toArray());
+      lastSurf = h;
+      handlers.onSurfacePaint?.(h.obj, dabs);
+      return;
+    }
     const h = hitBand(e);
     brush.visible = !!h && tool === "paint";
     if (!h) return;
@@ -271,6 +303,7 @@ export function createViewer(container, handlers = {}) {
     }
     down = true;
     last = null;
+    lastSurf = null;
     path = [];
     dom.setPointerCapture(e.pointerId);
     dom.dispatchEvent(new PointerEvent("pointermove", e));
@@ -279,6 +312,7 @@ export function createViewer(container, handlers = {}) {
     if (!down) return;
     down = false;
     if (tool === "paint") handlers.onPaintEnd?.();
+    if (tool === "surface") handlers.onSurfaceEnd?.();
     if (tool === "stroke" && path.length >= 2) handlers.onStroke?.(path.map((p) => [p.s, p.w]));
     if (tool === "outline" && path.length >= 3) handlers.onOutline?.(path.map((p) => [p.s, p.w]));
     path = [];
@@ -342,12 +376,17 @@ export function createViewer(container, handlers = {}) {
 
   // ---- off-screen views for the tech sheet ----
   let sheetRenderer = null;
+  let sheetEnv = null;
   function renderView(m, view, { px = 520, mode: viewMode = "shaded", pad = 1.15 } = {}) {
-    sheetRenderer ||= new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    if (!sheetRenderer) {
+      sheetRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+      // textures can't be shared between WebGL contexts: build its own
+      sheetEnv = makeEnvironment(sheetRenderer);
+    }
     sheetRenderer.setSize(px, px, false);
     const sc = new THREE.Scene();
     addLights(sc);
-    sc.environment = scene.environment;
+    sc.environment = sheetEnv;
     const objs = modelObjects(m, { mode: viewMode });
     sc.add(objs);
     const box = new THREE.Box3().setFromObject(objs);
@@ -357,8 +396,9 @@ export function createViewer(container, handlers = {}) {
     let spanX, spanY;
     if (view === "perspective") {
       cam = new THREE.PerspectiveCamera(30, 1, 1, 500);
-      const r = sz.length() * 1.25;
-      cam.position.set(c.x + r * 0.55, c.y + r * 0.45, c.z + r * 0.7);
+      // far enough that the bounding sphere fits the view, with a margin
+      const r = ((sz.length() / 2) / Math.tan((15 * Math.PI) / 180)) * 1.1;
+      cam.position.copy(c).addScaledVector(new THREE.Vector3(0.55, 0.45, 0.7).normalize(), r);
       cam.lookAt(c);
     } else {
       // world extents shown horizontally (spanX) and vertically (spanY)
@@ -414,6 +454,9 @@ export function createViewer(container, handlers = {}) {
       drawPath();
     },
     setBrush: (r) => (brushR = r),
+    get brush() {
+      return brushR;
+    },
     setSnap: (mm) => (snap = mm),
     setWandSpan: (mm) => (wandSpan = mm),
     setMode(m) {

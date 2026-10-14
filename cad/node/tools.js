@@ -5,7 +5,8 @@ import { report } from "../src/report.js";
 import { CUTS, MELEE_SIZES } from "../src/gems.js";
 import { DESIGNS, COMPONENTS, search } from "../src/library.js";
 import { interpret } from "../src/assistant.js";
-import { stlBytes, to3mf, bundle, sizeRun, sizeRange } from "../src/export.js";
+import { stlBytes, to3mf, bundle, sizeRun, sizeRange, glbBytes, objText } from "../src/export.js";
+import { mergeText } from "../src/script.js";
 import { renderPng } from "./render.js";
 import { initKernel, solidify, toGeometry } from "../src/kernel.js";
 import { resolveSculpts } from "../src/sculpts.js";
@@ -58,8 +59,11 @@ export const ready = initKernel();
 let baseDir = null;
 export const setBaseDir = (dir) => (baseDir = dir);
 
-async function compile(text, quality) {
+const QUALITIES = ["draft", "standard", "fine"];
+async function compile(text, quality = "standard") {
   await ready;
+  if (typeof text !== "string" || !text.trim()) throw new Error("design must be the JewelScript text of a design (a non-empty string)");
+  if (!QUALITIES.includes(quality)) throw new Error(`quality must be one of ${QUALITIES.join(", ")}`);
   const { design, errors } = parse(text);
   if (errors.length) {
     const e = new Error("The script has errors");
@@ -86,7 +90,11 @@ export async function stoneFit(text) {
   return { ok: !relevant.some((c) => c.level === "error"), stoneCount: r.stoneCount, findings: relevant.length ? relevant : [{ level: "ok", text: "All stones clear the metal and each other" }] };
 }
 
+export const VIEWS = ["iso", "top", "front", "side"];
 export async function render(text, { views = ["iso", "top"], size = 512 } = {}) {
+  const bad = views.filter((v) => !VIEWS.includes(v));
+  if (bad.length) throw new Error(`unknown view ${bad.join(", ")} (views: ${VIEWS.join(", ")})`);
+  if (!Number.isFinite(+size) || size < 64 || size > 1024) throw new Error("size must be a number of pixels from 64 to 1024");
   const { model } = await compile(text, "draft");
   return views.map((view) => ({ view, png: renderPng(model, { view, size }) }));
 }
@@ -108,25 +116,33 @@ export async function compare(a, b) {
 
 export async function edit(text, request) {
   const { design } = await compile(text);
+  if (typeof request !== "string" || !request.trim()) throw new Error("request must describe the change in words");
   const r = interpret(request, design);
-  return { text: serialize(r.design), changes: r.changes, notUnderstood: r.ignored };
+  // keep the caller's comments and layout; only changed lines are rewritten
+  return { text: mergeText(text, r.design), changes: r.changes, notes: r.notes, notUnderstood: r.ignored };
 }
 
 export async function exportBytes(text, format, { quality = "standard", part, sizes } = {}) {
   const { design, model } = await compile(text, quality);
+  if (part !== undefined) {
+    const names = [...new Set([...model.metal, ...model.stones].map((x) => String(x.obj).split("~")[0]))];
+    if (!names.includes(part)) throw new Error(`no part named "${part}" (parts: ${names.join(", ")})`);
+    if (!["stl", "stl-stones"].includes(format)) throw new Error("part= works with stl and stl-stones");
+  }
   switch (format) {
     case "stl": return { bytes: stlBytes(model, "metal", { obj: part }), ext: "stl" };
     case "stl-stones": return { bytes: stlBytes(model, "stones", { obj: part }), ext: "stl" };
     case "3mf": return { bytes: to3mf(model), ext: "3mf" };
-    case "bundle": return { bytes: bundle(design, model), ext: "zip" };
+    case "glb": return { bytes: glbBytes(model), ext: "glb" };
+    case "obj": return { bytes: objText(model), ext: "obj" };
+    case "bundle": return { bytes: bundle(design, model, text), ext: "zip" };
     case "sizerun": {
       const m = /^(US|EU|DE|IT|JP)(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?::(\d+(?:\.\d+)?))?$/i.exec(sizes || "");
       if (!m) throw new Error('sizes must look like "US5-8:0.5"');
       const list = sizeRange(m[1].toUpperCase(), +m[2], +m[3], m[4] ? +m[4] : 0.5);
-      if (list.length > 40) throw new Error("at most 40 sizes per run");
       return { bytes: sizeRun(design, list, quality), ext: "zip" };
     }
-    default: throw new Error(`unknown format "${format}" (stl, stl-stones, 3mf, bundle, sizerun)`);
+    default: throw new Error(`unknown format "${format}" (stl, stl-stones, 3mf, glb, obj, bundle, sizerun)`);
   }
 }
 

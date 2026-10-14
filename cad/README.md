@@ -34,10 +34,15 @@ npm test             # all tests
 - Ring sizes US, EU, DE, IT, JP or an inside `diameter=`; the panel converts between systems. 17 alloys with a density override.
 - Gallery of 28 designs and 9 components with search; a rule-based assistant (not an AI model) that edits the design from requests like "a size 6.5 platinum solitaire with a 1 ct oval in six prongs" and lists the words it did not use.
 
+**Solid kernel and sculpts**
+- Metal is one exact solid: every part is unioned and every stone's seat cut with Manifold (WASM, in a background worker), so weights are exact, floating pieces are found exactly, and whole-piece exports are a single watertight shell.
+- Sculpts: import an AI-generated mesh or a scan (STL, OBJ, GLB) as part of the design. "Fit to ring" finds the finger hole at any angle, sizes it to the ring size and turns the head up. Broken meshes are rebuilt as solids (voxel remesh with hole closing), with optional smoothing, hollowing to a wall, symmetrizing and removal of loose debris. Meshes are stored in the browser (IndexedDB) or an assets folder (CLI/MCP).
+- Pavé on sculpts: the Surface tool paints onto a sculpt; stones follow the surface, never hang over an edge, get beads and seats, and auto-size. Sculpt walls are measured at every vertex (heatmap and minimum-wall check).
+
 **Editor**
-- Tools: orbit, brush (paint pavé), stroke, outline, wand (fill across the band), measure; grid snap. One drag is one undo step; Undo/Redo cover every change, including opening a template.
+- Tools: orbit, brush (paint pavé), stroke, outline, wand (fill across the band), surface (paint on a sculpt), measure; grid snap. One drag is one undo step; Undo/Redo cover every change, including opening a template.
 - Objects tab with per-object stone counts and weights, highlighting and removal. Command palette (Ctrl/Cmd+K). Views (iso, top, front, right, fit), a 4-view layout, and display modes: shaded, translucent metal, edges, and a wall-thickness heatmap.
-- Imports: `.jws` scripts; STL/OBJ/GLB as a translucent reference mesh (with a warning when its size does not look like millimetres); SVG artwork as a pavé region on the shoulder.
+- Imports: `.jws` scripts; STL/OBJ/GLB as a sculpt or as a translucent reference (GLB in metres is converted); SVG artwork as a pavé region on the shoulder (scaled to fit).
 
 **Checks** (in the sidebar, the tech sheet, the CLI and the MCP server)
 - Thinnest shank wall from the real profile (with its location) and every part against `rule min_wall`; open (non-watertight) metal; metal not connected to the rest; stones in the finger bore; stones overhanging the band; stones nothing holds; stones running into prongs; metal under pavé culets; edge margin; touching stones; overlaps; unstocked melee sizes; fills that produce no stones.
@@ -50,17 +55,17 @@ npm test             # all tests
 
 **MCP server** (stdio): `claude mcp add jewelscript -- node /path/to/cad/mcp.js`
 
-Tools: `read_docs`, `browse_catalog`, `search_examples`, `get_example`, `validate_design`, `measure_design`, `check_stone_fit`, `render_design` (PNG images from a built-in software renderer), `compare_designs`, `edit_design`, `export_design` (writes only under `$JEWELSCRIPT_OUT`, default `./jewelscript-out`).
+Tools: `read_docs`, `browse_catalog`, `search_examples`, `get_example`, `validate_design`, `measure_design`, `check_stone_fit`, `render_design` (PNG images from a built-in software renderer), `compare_designs`, `edit_design` (keeps the caller's comments), `import_mesh` (copies a sculpt into `$JEWELSCRIPT_ASSETS`), `export_design` (STL, 3MF, GLB, OBJ, bundle, size run; writes only under `$JEWELSCRIPT_OUT`).
 
 **CLI**: `node cad/cli.js <validate|check|measure|render|export> <file.jws|-> [options]`. Output is JSON. Exit codes: 0 ok, 1 script errors, 2 usage or file problem, 3 checks failed.
 
 ## Limits
 
-- Geometry is built from parametric primitives, not a general CAD kernel: no booleans, sweeps along arbitrary rails, lofts, surfaces, engraving, relief or mesh repair tools.
-- No STEP, Rhino `.3dm` or JewelCAD `.jcd` import; imported meshes are references only. No image or font import.
-- Halo stones are skipped where prongs pass (the prong sits between two halo stones), so counts vary slightly with prong count.
-- The connectivity check compares bounding boxes, so it catches floating parts but not every gap. Stone/metal clearance is checked against prongs only.
-- Painted positions are stored as mm along the band, so changing the ring size moves them around the ring slightly.
-- Weights use typical alloy densities and deduct flush stone seats; carats are diamond estimates from size.
+- No general modelling operations for the user: no free booleans, sweeps along arbitrary rails, lofts, NURBS surfaces, engraving or relief. (Booleans are used internally for the solid and seats.)
+- No STEP, Rhino `.3dm` or JewelCAD `.jcd` import; no image or font import.
+- Sculpt repair is voxel-based: details smaller than the voxel (0.15 mm by default) are softened, and repairing a large mesh takes seconds.
+- Stone clearance against other settings uses simple shapes (capsules for prongs and posts, outline prisms for bezels and plates), not the exact metal.
+- Painted band positions are stored as mm along the band, so changing the ring size moves them around the ring slightly.
+- Carats are diamond estimates from size; densities are typical values for each alloy.
 - UK, HK and MATRIX ring sizes are not included (no verified table).
 - The assistant is rule-based; it is not a language model.

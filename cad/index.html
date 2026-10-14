@@ -39,16 +39,19 @@ var band=1.8              # use as {band} or {band*2}
 ring size=US7|EU54|DE54|IT14|JP13
      (or diameter=17.35) metal=18k-yellow
      (density=15.5 overrides the alloy)
-shank width=3 thickness=1.8 profile=flat|comfort|domed
+shank width=3 thickness=1.8 profile=flat|comfort|domed|none
 stone cut=round dia=6.5 setting=prong|bezel|illusion|none
      prongs=4 tip=round|pointed|flat|claw
 halo dia=1.2 gap=0.1 kind=single|double|hidden
-accent id=side cut=pear dia=2.5 s=12 w=0
+accent id=side cut=pear dia=2.5 s=12 w=0 turn=0
      setting=bezel|prong|flush mirror=yes
 stroke id=row pts=8:0,20:0 dia=1.3 (or count=10)
      gap=0.15 setting=bead|channel|none mirror=yes
 region id=z pts=8:-1,20:-1,20:1,8:1 dia=1.3|auto
      min=0.9 max=1.5 setting=bead|none mirror=yes
+sculpt id=ring src=ring.stl fit=ring repair=auto
+     close=2 smooth=1 hollow=0 symmetrize=none
+surfpave id=p on=ring pts=x:y:z,… r=1.5 dia=auto
 pave dia=1.3|auto gap=0.15 bead=0.35
 paint s=0 w=0 r=2          # brush stroke (mm)
 rule min_wall=0.8 shrink=0 # shrink: % on export
@@ -84,6 +87,7 @@ rule min_wall=0.8 shrink=0 # shrink: % on export
             <button data-tool="stroke" aria-pressed="false" title="One row of stones along a drawn path">Stroke</button>
             <button data-tool="outline" aria-pressed="false" title="Draw a closed outline to fill">Outline</button>
             <button data-tool="wand" aria-pressed="false" title="Click to fill the band across its width">Wand</button>
+            <button data-tool="surface" aria-pressed="false" title="Paint pavé onto a sculpt">Surface</button>
             <button data-tool="measure" aria-pressed="false" title="Click two points">Measure</button>
           </span>
           <label>Brush <input id="brush" type="range" min="0.8" max="5" step="0.1" value="2" /></label>
@@ -91,7 +95,7 @@ rule min_wall=0.8 shrink=0 # shrink: % on export
           <label>Snap
             <select id="snap"><option value="0">Off</option><option value="0.25">0.25 mm</option><option value="0.5">0.5 mm</option><option value="1">1 mm</option></select>
           </label>
-          <button id="clear-paint">Clear pavé</button>
+          <button id="clear-paint" title="Removes brushed pavé, strokes and regions on the band">Clear band pavé</button>
           <span id="hint" aria-live="polite"></span>
         </div>
       </section>
@@ -179,6 +183,24 @@ rule min_wall=0.8 shrink=0 # shrink: % on export
           <iframe id="ts-frame" title="Tech sheet preview"></iframe>
         </div>
         <menu><button value="close">Close</button></menu>
+      </form>
+    </dialog>
+
+    <dialog id="sculpt-dialog" aria-labelledby="sculpt-title">
+      <form method="dialog" class="dlg">
+        <h2 id="sculpt-title">Import a mesh</h2>
+        <p id="sc-file" class="note"></p>
+        <p class="note">As a <b>sculpt</b> it becomes part of the design: repaired into a solid, sized, weighed, checked and exported, and you can paint pavé on it. As a <b>reference</b> it is only shown for comparison.</p>
+        <label><input id="sc-fit" type="checkbox" checked /> It is a ring: find the finger hole, size it to the ring size and turn the head up</label>
+        <label><input id="sc-whole" type="checkbox" checked /> It is the whole ring (no separate band or centre stone)</label>
+        <div class="row"><label for="sc-repair">Repair</label>
+          <select id="sc-repair"><option value="auto" selected>Only if needed</option><option value="voxel">Always rebuild as a solid</option><option value="none">Never (must already be solid)</option></select></div>
+        <div class="row"><label for="sc-close">Close holes up to (voxels)</label><input id="sc-close" type="number" min="0" max="10" step="1" value="2" /></div>
+        <div class="row"><label for="sc-smooth">Smooth (passes)</label><input id="sc-smooth" type="number" min="0" max="5" step="1" value="1" /></div>
+        <div class="row"><label for="sc-hollow">Hollow to a wall of (mm, 0 = solid)</label><input id="sc-hollow" type="number" min="0" max="5" step="0.1" value="0" /></div>
+        <div class="row"><label for="sc-sym">Symmetrize</label>
+          <select id="sc-sym"><option value="none">No</option><option value="x+">Mirror the right half</option><option value="x-">Mirror the left half</option></select></div>
+        <menu><button value="close">Cancel</button><button id="sc-ref" value="">Reference only</button><button id="sc-add" value="" class="primary">Add as sculpt</button></menu>
       </form>
     </dialog>
 
