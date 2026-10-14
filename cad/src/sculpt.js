@@ -629,6 +629,12 @@ export function prepareSculpt(soup, opts = {}, ctx = {}) {
     man.delete();
     man = s;
   }
+  // a hollow with no way out: casting and printing need a vent or drain
+  info.cavities = man.decompose().reduce((n, m) => {
+    const v = m.volume();
+    m.delete();
+    return n + (v < 0 ? 1 : 0);
+  }, 0);
   const ob = man.boundingBox();
   Object.assign(info, { triangles: man.numTri(), volume: man.volume(), size: ob.max.map((v, k) => v - ob.min[k]) });
   return { manifold: man, info };

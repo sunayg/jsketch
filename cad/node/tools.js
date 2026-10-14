@@ -19,9 +19,13 @@ import { resolve, join, extname, isAbsolute } from "node:path";
 export const ASSETS = resolve(process.env.JEWELSCRIPT_ASSETS || "jewelscript-assets");
 export async function loadAsset(src, baseDir) {
   if (/^[0-9a-f]{16}$/.test(src)) {
-    const files = await readdir(ASSETS).catch(() => []);
-    const f = files.find((n) => n.startsWith(src + "."));
-    return f ? { bytes: new Uint8Array(await readFile(join(ASSETS, f))), ext: extname(f).slice(1) } : null;
+    // the assets folder, or next to the script (an unpacked bundle)
+    for (const dir of [ASSETS, baseDir].filter(Boolean)) {
+      const files = await readdir(dir).catch(() => []);
+      const f = files.find((n) => n.startsWith(src + ".") && ["stl", "obj", "glb"].includes(extname(n).slice(1).toLowerCase()));
+      if (f) return { bytes: new Uint8Array(await readFile(join(dir, f))), ext: extname(f).slice(1) };
+    }
+    return null;
   }
   // a file name, or a path inside the script's folder or the assets folder;
   // never somewhere else on the disk
@@ -43,7 +47,8 @@ export async function importMesh(path) {
   const bytes = await readFile(path).then((b) => new Uint8Array(b), (e) => {
     throw new Error(e.code === "ENOENT" ? `no file at ${path}` : `cannot read ${path}: ${e.code || e.message}`);
   });
-  const soup = readMesh(bytes, ext); // fails early on unreadable files
+  const soup = readMesh(bytes, ext);
+  if (soup.length / 9 < 20) throw new Error(`${path} has only ${soup.length / 9} triangle(s); a sculpt needs a real mesh`); // fails early on unreadable files
   const id = await assetId(bytes);
   await mkdir(ASSETS, { recursive: true });
   await writeFile(join(ASSETS, `${id}.${ext}`), bytes);

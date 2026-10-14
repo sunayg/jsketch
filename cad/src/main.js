@@ -654,7 +654,7 @@ function updateExportForm() {
     "3mf": "3MF package with metal and stones as separate objects, units in millimetres.",
     glb: "GLB with metal and stones, for web viewers and AR.",
     obj: "OBJ with metal and stones, for rendering.",
-    bundle: "Zip with design.jws (editable source), metal.stl, stones.stl and model.3mf.",
+    bundle: "Zip with design.jws (editable source), metal.stl, stones.stl, model.3mf and the sculpt meshes the script uses.",
     sizerun: "Zip with one metal STL per finger size; everything else stays the same.",
   }[f];
 }

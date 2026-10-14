@@ -61,6 +61,7 @@ export function interpret(text, design) {
     if (!neg) continue;
     use(neg);
     if (d.ring.metal === key) ruledOut = key;
+    else notes.push(`The ring is not ${METALS[key].label} now (it is ${METALS[d.ring.metal].label}), so there was nothing to change`);
   }
   const named = metalWords.map(([w, key]) => [new RegExp(`\\b${w}\\b`), key, w]).find(([re, , w]) => re.test(t) && !negated(w));
   if (named) {
@@ -247,5 +248,6 @@ export function interpret(text, design) {
 
   const FILLER = new Set(["a", "an", "the", "in", "with", "and", "of", "ring", "make", "me", "please", "set", "gold", "k", "solitaire", "engagement", "stone", "stones", "centre", "center", "for", "to", "on", "mm", "it", "band", "tips", "shoulders", "rounds", "prong", "prongs", "size", "cut", "change", "is", "be", "i", "want", "would", "like", "can", "you", "use", "give", "make", "it's", "its", "that", "this", "but"]);
   const ignored = t.split(/\s+/).filter((w) => w && !used.has(w) && !FILLER.has(w) && !/^\d/.test(w));
+  if (d.sculpts.length && design.stone.setting === "none" && d.stone.setting !== "none") notes.push("The centre stone and its head are placed for a standard band; check that they sit where you want on the sculpt");
   return { design: d, changes: changes.map((c) => c.text), ignored, notes };
 }

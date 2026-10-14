@@ -285,6 +285,7 @@ export function parse(text) {
     if (isList) {
       if (obj.id === undefined) return reported ? undefined : err(line, `${cmd} needs an id, e.g. ${cmd} id=${cmd}1`);
       if (cmd === "sculpt" && !obj.src) return reported ? undefined : err(line, "sculpt needs src= (import a mesh first)");
+      if (cmd === "sculpt" && obj.fit === "ring" && obj.scale !== undefined) return reported ? undefined : err(line, "scale= has no effect with fit=ring, which sizes the sculpt to the ring; remove scale= or use fit=none");
       if (cmd === "surfpave" && (!obj.on || !obj.pts?.length)) return reported ? undefined : err(line, "surfpave needs on=<sculpt id> and pts=x:y:z,…");
       const need = cmd === "region" ? 3 : cmd === "stroke" ? 2 : 0;
       if (need && (!obj.pts || obj.pts.length < need)) return reported ? undefined : err(line, `${cmd} needs pts with at least ${need} points`);

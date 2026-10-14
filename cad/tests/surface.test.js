@@ -58,7 +58,7 @@ test("surface pavé covers the painted part of a sculpt, on the surface and faci
 });
 
 test("surface pavé never hangs over an edge, and mirrors", async () => {
-  const { model } = await make(`${BASE}sculpt id=plate src=plate.stl\nsurfpave id=c on=plate pts=4:1:4 r=3 dia=1.3 gap=0.15 mirror=yes`);
+  const { model } = await make(`${BASE}sculpt id=plate src=plate.stl y=12\nsurfpave id=c on=plate pts=4:13:4 r=3 dia=1.3 gap=0.15 mirror=yes`);
   const stones = model.stones.filter((s) => s.role === "surface");
   assert.ok(stones.length >= 4);
   // the brush is a sphere, so pavé may wrap onto the side faces; what must
@@ -71,7 +71,7 @@ test("surface pavé never hangs over an edge, and mirrors", async () => {
     for (let k = 0; k < 16; k++) {
       const a = (k / 16) * Math.PI * 2;
       const g = s.pos.clone().addScaledVector(u, Math.cos(a) * s.dia / 2).addScaledVector(v, Math.sin(a) * s.dia / 2);
-      assert.ok(Math.abs(g.x) <= 5.02 && Math.abs(g.y) <= 1.02 && Math.abs(g.z) <= 5.02, `girdle point ${g.toArray()} of stone at ${s.pos.toArray()}`);
+      assert.ok(Math.abs(g.x) <= 5.02 && Math.abs(g.y - 12) <= 1.02 && Math.abs(g.z) <= 5.02, `girdle point ${g.toArray()} of stone at ${s.pos.toArray()}`);
     }
   }
   assert.ok(stones.some((s) => s.pos.x < 0) && stones.some((s) => s.pos.x > 0), "mirrored to -x");

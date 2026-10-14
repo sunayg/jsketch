@@ -99,22 +99,24 @@ export function sizeRange(system, from, to, step = 0.5, max = 40) {
   if (to < from) throw new Error(`size range ends (${to}) before it starts (${from})`);
   const [lo, hi] = RANGE[system] || [];
   if (lo === undefined) throw new Error(`unknown size system ${system}`);
+  if (from < lo - 1e-9 || to > hi + 1e-9) throw new Error(`${system} sizes run from ${lo} to ${hi}; ${from}-${to} goes outside that`);
   const out = [];
-  for (let n = from; n <= to + 1e-9; n += step) if (n >= lo - 1e-9 && n <= hi + 1e-9) out.push(`${system}${+n.toFixed(2)}`);
-  if (!out.length) throw new Error(`no ${system} sizes between ${from} and ${to} (${system} runs ${lo}-${hi})`);
+  for (let n = from; n <= to + 1e-9; n += step) out.push(`${system}${+n.toFixed(2)}`);
   if (out.length > max) throw new Error(`${out.length} sizes is more than ${max} per run`);
   return out;
 }
 
 // Portable bundle: the source script plus meshes, so it opens anywhere.
 // `text` is the script as written (comments and all); falls back to canonical.
-export function bundle(design, model, text = null) {
+// extra: more files to include (the sculpt meshes the script uses).
+export function bundle(design, model, text = null, extra = {}) {
   return zipStore({
+    ...extra,
     "design.jws": text ?? serialize(design),
     "metal.stl": stlBytes(model, "metal"),
     ...(model.stones.length ? { "stones.stl": stlBytes(model, "stones") } : {}),
     "model.3mf": to3mf(model),
-    "README.txt": "JewelScript bundle: design.jws is the editable source; the meshes are in millimetres.\n",
+    "README.txt": "JewelScript bundle: design.jws is the editable source; the meshes are in millimetres. Sculpt meshes the script uses are included under the names its src= refers to; keep them next to design.jws.\n",
   });
 }
 

@@ -153,8 +153,8 @@ test("exports include sculpts; size runs re-fit them per size; no-stone designs 
   assert.ok(!new TextDecoder().decode(zip.bytes).includes("stones.stl"));
   await assert.rejects(exportDesign(pb, bare, "stl", { loadAsset, part: "shank" }), /no part named "shank"/);
   await assert.rejects(exportDesign(parse(`${BASE}sculpt id=s src=missing.stl`).design, bare, "stl", { loadAsset }), /could not be used/);
-  assert.ok(sizeRange("US", 0, 20, 0.5).every((s) => parse(`${BASE}`.replace("US7", s)).errors.length === 0), "only sizes the language accepts");
-  assert.deepEqual(sizeRange("US", 15.5, 20, 0.5).slice(-1), ["US16"]);
+  assert.throws(() => sizeRange("US", 0, 20, 0.5), /US sizes run from 0 to 16/);
+  assert.deepEqual(sizeRange("US", 15, 16, 0.5), ["US15", "US15.5", "US16"]);
 });
 
 test("surface pavé paints only the side the brush touched", async () => {

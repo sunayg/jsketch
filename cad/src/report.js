@@ -190,7 +190,9 @@ export function report(model, exact = null) {
       checks.push({ level: "error", text: `sculpt ${id}: wall is ${info.minWall.mm.toFixed(2)} mm at (${info.minWall.at.map((v) => v.toFixed(2)).join(", ")}), under the ${minWall} mm minimum; thicken it or hollow less` });
     }
     if (info.unscaled) checks.push({ level: "warn", text: `sculpt ${id} is ${Math.max(...info.sizeBeforeRepair).toFixed(1)} mm across, which does not look like millimetres: use fit=ring or set scale=` });
-    if (info.removedPieces) checks.push({ level: "info", text: `sculpt ${id}: removed ${info.removedPieces} loose piece(s), ${info.removedVolume} mm³ in all` });
+    if (info.cavities) checks.push({ level: "warn", text: `sculpt ${id} is hollow with ${info.cavities === 1 ? "a closed cavity" : `${info.cavities} closed cavities`}: add a vent or drain hole before casting or printing` });
+    if (info.removedPieces && info.removedVolume > 0.05 * info.volume) checks.push({ level: "warn", text: `sculpt ${id}: removed ${info.removedPieces} loose piece(s), ${info.removedVolume} mm³ (${Math.round((100 * info.removedVolume) / info.volume)}% of what was kept); if that was meant to be part of the ring, use keep=all or join it to the rest` });
+    else if (info.removedPieces) checks.push({ level: "info", text: `sculpt ${id}: removed ${info.removedPieces} loose piece(s), ${info.removedVolume} mm³ in all` });
     if (info.autoClose) checks.push({ level: "info", text: `sculpt ${id}: holes in the mesh were closed (close=${info.autoClose}${info.autoSmooth ? `, smooth=${info.autoSmooth}` : ""}); set close= and smooth= to change it` });
     if (info.notWatertight && info.method === "voxel") checks.push({ level: "info", text: `sculpt ${id} was not watertight; rebuilt as a solid (voxel ${info.voxel.toFixed(2)} mm)` });
   }

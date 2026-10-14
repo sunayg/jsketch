@@ -378,7 +378,7 @@ function buildStroke(d, geom, o, pts, id, metal, stones, warnings, colliders = [
 // ---- pavé on sculpt surfaces ----
 
 // Pack round stones of `dia` over the part of the surface within r of any dab.
-function surfaceFill(grid, dabs, r, dia, gap, id, occupied, colliders = []) {
+function surfaceFill(grid, dabs, r, dia, gap, id, occupied, colliders = [], boreR = 0) {
   const pitch = dia + gap;
   const tri = new THREE.Triangle();
   const centres = dabs.map(([x, y, z]) => new THREE.Vector3(x, y, z));
@@ -445,6 +445,10 @@ function surfaceFill(grid, dabs, r, dia, gap, id, occupied, colliders = []) {
     }
     if (!onSurface) continue;
     const pos = q.clone().addScaledVector(n, -0.05);
+    // no part of the stone (girdle or pavilion) may enter the finger hole
+    const rr = Math.hypot(pos.x, pos.y) || 1;
+    const c = Math.abs((n.x * pos.x + n.y * pos.y) / rr);
+    if (rr - (0.43 * dia * c + (dia / 2) * Math.sqrt(Math.max(0, 1 - c * c))) < boreR + 0.05) continue;
     if (occupied.some((o) => o.pos.distanceTo(pos) < (o.dia * CUTS[o.cut].aspect + dia) / 2 + gap)) continue;
     if (hitsMetal(pos, dia / 2 + gap, colliders, id)) continue;
     // metal left under the culet: through the sculpt to its far side
@@ -655,7 +659,7 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
     const grid = gridOf(sp.on);
     if (!grid) continue; // the sculpt is still preparing (reported above)
     for (const [dabs, id] of sp.mirror === "yes" ? [[sp.pts, sp.id], [sp.pts.map(([x, y, z]) => [-x, y, z]), `${sp.id}~mirror`]] : [[sp.pts, sp.id]]) {
-      const fill = (dd) => surfaceFill(grid, dabs, sp.r, dd, sp.gap, id, stones, colliders);
+      const fill = (dd) => surfaceFill(grid, dabs, sp.r, dd, sp.gap, id, stones, colliders, ri);
       let row;
       if (sp.dia === "auto") {
         const best = autoFill(sp.min ?? 0.9, sp.max ?? 2, fill);

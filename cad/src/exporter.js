@@ -3,7 +3,7 @@
 // write the file. Needs the solid kernel (initKernel) to be ready.
 import { build } from "./build.js";
 import { solidify, toGeometry } from "./kernel.js";
-import { resolveSculpts } from "./sculpts.js";
+import { resolveSculpts, innerDiameterOf, radialShift } from "./sculpts.js";
 import { stlBytes, to3mf, bundle, glbBytes, objText } from "./export.js";
 import { formatSize, parseSize } from "./sizes.js";
 import { zipStore } from "./zip.js";
@@ -13,9 +13,9 @@ export const QUALITIES = ["draft", "standard", "fine"];
 
 // The built model with model.solidGeometry (one watertight shell, seats cut)
 // and model.exact (volumes, pieces).
-export async function compileDesign(design, { quality = "standard", loadAsset }) {
+export async function compileDesign(design, { quality = "standard", loadAsset, baseInner }) {
   if (!QUALITIES.includes(quality)) throw new Error(`quality must be one of ${QUALITIES.join(", ")}`);
-  const sculpts = await resolveSculpts(design, loadAsset);
+  const sculpts = await resolveSculpts(design, loadAsset, { baseInner });
   const model = build(design, { quality, sculpts });
   const exact = solidify(model);
   model.solidGeometry = toGeometry(exact.solid);
@@ -37,6 +37,7 @@ export async function exportDesign(design, text, format, opts = {}) {
   if (format === "sizerun") {
     if (!sizes?.length) throw new Error("a size run needs a list of sizes");
     const files = {};
+    const baseInner = innerDiameterOf(d);
     for (const size of sizes) {
       const s = parseSize(size);
       if (!s) throw new Error(`Bad size ${size}`);
@@ -44,7 +45,14 @@ export async function exportDesign(design, text, format, opts = {}) {
       ds.ring.size = formatSize(s.system, s.n);
       delete ds.ring.diameter;
       delete ds.exprs?.["ring.diameter"];
-      const m = await compileDesign(ds, { quality, loadAsset });
+      // fitted sculpts keep their head and section; only the bore changes,
+      // and pavé painted on them moves with the surface
+      const dr = (innerDiameterOf(ds) - baseInner) / 2;
+      for (const sp of ds.surfpaves) {
+        if (ds.sculpts.find((x) => x.id === sp.on)?.fit !== "ring") continue;
+        sp.pts = sp.pts.map(([x, y, z]) => [...radialShift(x, y, dr, baseInner / 2), z]);
+      }
+      const m = await compileDesign(ds, { quality, loadAsset, baseInner });
       if (m.errors?.length) throw new Error(`${ds.ring.size}: ${m.errors[0]}`);
       files[`${ds.name.replace(/[^\w-]+/g, "_")}_${ds.ring.size}.stl`] = stlBytes(m, "metal");
     }
@@ -65,6 +73,14 @@ export async function exportDesign(design, text, format, opts = {}) {
     case "3mf": return { bytes: to3mf(model), ext: "3mf" };
     case "glb": return { bytes: glbBytes(model), ext: "glb" };
     case "obj": return { bytes: objText(model), ext: "obj" };
-    case "bundle": return { bytes: bundle(d, model, text), ext: "zip" };
+    case "bundle": {
+      // the sculpt meshes travel with the script, named so src= finds them
+      const meshes = {};
+      for (const sc of d.sculpts) {
+        const a = await loadAsset(sc.src);
+        if (a) meshes[/^[0-9a-f]{16}$/.test(sc.src) ? `${sc.src}.${a.ext}` : sc.src] = a.bytes;
+      }
+      return { bytes: bundle(d, model, text, meshes), ext: "zip" };
+    }
   }
 }
