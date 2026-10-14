@@ -23,3 +23,7 @@ By default concepts are drawn procedurally in the browser, so no API key is need
 ## Not included
 
 Accounts, real-time collaboration, billing, voice, video, and image-to-3D generation. These need a backend; see the spec for how BLNG splits them.
+
+## JewelScript CAD
+
+The repo also contains a text-defined parametric jewelry CAD in `cad/` (see `cad/README.md`), built from the spec in `diatech-reverse-engineering.md`. Run it with `npm run cad`.
