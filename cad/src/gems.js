@@ -72,11 +72,95 @@ export const MELEE_SIZES = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.
 export const caratOf = (cut, dia) => CUTS[cut].k * dia ** 3 * CUTS[cut].aspect;
 export const isStockedMelee = (dia) => MELEE_SIZES.some((s) => Math.abs(s - dia) < 1e-6);
 
-// Closed girdle outline in the xz plane, widened by `off` mm on every side.
+// True offset of a closed polygon by `off` mm (positive = outward): the
+// outline grown by a disc. Convex corners get round joins (exactly `off` from
+// the corner), concave corners a capped miter; loops are removed afterwards.
+export function offsetPolygon(pts, off) {
+  if (!off) return pts;
+  const n = pts.length;
+  let area = 0;
+  for (let i = 0; i < n; i++) area += pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1];
+  const sign = area > 0 ? 1 : -1; // outward normal side for this winding
+  const normal = (a, b) => {
+    const dx = b[0] - a[0], dz = b[1] - a[1];
+    const len = Math.hypot(dx, dz) || 1;
+    return [(sign * dz) / len, (-sign * dx) / len];
+  };
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const p = pts[i], prev = pts[(i - 1 + n) % n], next = pts[(i + 1) % n];
+    const n1 = normal(prev, p), n2 = normal(p, next);
+    // convex for this offset direction when the edge turns away from the offset side
+    const turn = (p[0] - prev[0]) * (next[1] - p[1]) - (p[1] - prev[1]) * (next[0] - p[0]);
+    const convex = turn * sign * Math.sign(off) > 0;
+    const angle = Math.atan2(n1[0] * n2[1] - n1[1] * n2[0], n1[0] * n2[0] + n1[1] * n2[1]);
+    if (convex && Math.abs(angle) > 0.15) {
+      // round join: sweep from n1 to n2 around the corner
+      const steps = Math.ceil(Math.abs(angle) / 0.2);
+      const a0 = Math.atan2(n1[1], n1[0]);
+      for (let k = 0; k <= steps; k++) {
+        const t = a0 + (angle * k) / steps;
+        out.push([p[0] + Math.cos(t) * off, p[1] + Math.sin(t) * off]);
+      }
+      continue;
+    }
+    let bx = n1[0] + n2[0], bz = n1[1] + n2[1];
+    const bl = Math.hypot(bx, bz);
+    if (bl < 1e-9) {
+      out.push([p[0] + n1[0] * off, p[1] + n1[1] * off]);
+      continue;
+    }
+    bx /= bl;
+    bz /= bl;
+    const cosHalf = Math.max(0.5, bx * n1[0] + bz * n1[1]);
+    out.push([p[0] + (bx * off) / cosHalf, p[1] + (bz * off) / cosHalf]);
+  }
+  return out;
+}
+
+// Cut out the small loops an offset makes at concave corners (the heart's
+// notch), leaving a simple polygon.
+export function removeLoops(pts) {
+  const cross = (a, b, c, d) => {
+    const r = [b[0] - a[0], b[1] - a[1]], q = [d[0] - c[0], d[1] - c[1]];
+    const den = r[0] * q[1] - r[1] * q[0];
+    if (Math.abs(den) < 1e-12) return null;
+    const t = ((c[0] - a[0]) * q[1] - (c[1] - a[1]) * q[0]) / den;
+    const u = ((c[0] - a[0]) * r[1] - (c[1] - a[1]) * r[0]) / den;
+    return t > 1e-9 && t < 1 - 1e-9 && u > 1e-9 && u < 1 - 1e-9 ? [a[0] + r[0] * t, a[1] + r[1] * t] : null;
+  };
+  let poly = pts.slice();
+  for (let guard = 0; guard < 50; guard++) {
+    const n = poly.length;
+    let found = false;
+    for (let i = 0; i < n && !found; i++) {
+      // a loop is short: only look a quarter of the way round
+      for (let k = 2; k < Math.min(n - 1, Math.ceil(n / 4)) && !found; k++) {
+        const j = (i + k) % n;
+        const x = cross(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n]);
+        if (!x) continue;
+        // drop vertices i+1..j, replace with the crossing point
+        const keep = [];
+        for (let m = 0; m < n; m++) {
+          const inLoop = ((m - i - 1 + n) % n) < k;
+          if (!inLoop) keep.push(poly[m]);
+          if (m === i) keep.push(x);
+        }
+        poly = keep;
+        found = true;
+      }
+    }
+    if (!found) break;
+  }
+  return poly;
+}
+
+// Closed girdle outline in the xz plane, offset by `off` mm on every side.
 // N is the sample count for smooth cuts; polygon cuts ignore it.
 export function outline(cut, dia, off = 0, N = 360) {
   const c = CUTS[cut];
-  return c.shape(dia / 2 + off, (dia * c.aspect) / 2 + off, N);
+  const base = c.shape(dia / 2, (dia * c.aspect) / 2, N);
+  return off ? removeLoops(offsetPolygon(base, off)) : base;
 }
 
 // Girdle plane at y = 0, table up (+y), culet down. Proportions follow a

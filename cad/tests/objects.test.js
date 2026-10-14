@@ -99,3 +99,23 @@ test("parse errors for named objects", () => {
   const r = parse("accent id=a\naccent id=a\nstroke id=s pts=1:1\nregion id=r pts=a:b\nregion pts=1:1,2:2,3:3\naccent id=9x");
   assert.deepEqual(r.errors.map((e) => e.line), [2, 3, 4, 5, 6]);
 });
+
+test("outline offsets are true offsets: every point is off mm from the stone", async () => {
+  const { outline, CUTS } = await import("../src/gems.js");
+  for (const cut of Object.keys(CUTS)) {
+    const base = outline(cut, 6);
+    const dist = (p) => {
+      let m = Infinity;
+      for (let i = 0; i < base.length; i++) {
+        const a = base[i], b = base[(i + 1) % base.length];
+        const dx = b[0] - a[0], dz = b[1] - a[1];
+        const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / (dx * dx + dz * dz || 1)));
+        m = Math.min(m, Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dz * t));
+      }
+      return m;
+    };
+    const ds = outline(cut, 6, 1).map(dist);
+    // the heart's notch is filled in, so a few points sit a little closer
+    assert.ok(Math.max(...ds) < 1.01 && Math.min(...ds) > (cut === "heart" ? 0.85 : 0.99), `${cut}: ${Math.min(...ds)}..${Math.max(...ds)}`);
+  }
+});

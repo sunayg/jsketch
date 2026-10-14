@@ -30,7 +30,7 @@ npm test             # all tests
 **Design**
 - Text script with variables (`var band=1.8`) and arithmetic in `{…}`; errors per line, with a stale banner while the last valid design stays on screen. Drafts with errors survive a reload.
 - Named objects: `accent` (single side stones, bezel/prong/flush), `stroke` (a row along a path, bead or channel set, by size or by count) and `region` (an outline filled with a hex lattice). Any of them can be mirrored to the other shoulder. Fills keep clear of the head and of stones already placed.
-- 15 cuts: round, oval, marquise, pear, heart, cushion, princess, emerald, asscher, radiant, baguette, tapered baguette, trillion, hexagonal, octagonal. Settings: prong (round, pointed, flat or claw tips), bezel, illusion, or none (plain band). Halos: single, double, hidden, following the cut's outline and leaving room for the prongs.
+- 15 cuts: round, oval, marquise, pear, heart, cushion, princess, emerald, asscher, radiant, baguette, tapered baguette, trillion, hexagonal, octagonal. Settings: prong (round, pointed, flat or claw tips), bezel, illusion, or none (plain band). Halos: single, double, hidden, on a true offset of the cut's outline (round joins at points, loops removed at notches) and leaving room for the prongs.
 - Ring sizes US, EU, DE, IT, JP or an inside `diameter=`; the panel converts between systems. 17 alloys with a density override.
 - Gallery of 28 designs and 9 components with search; a rule-based assistant (not an AI model) that edits the design from requests like "a size 6.5 platinum solitaire with a 1 ct oval in six prongs" and lists the words it did not use.
 
@@ -58,7 +58,7 @@ Tools: `read_docs`, `browse_catalog`, `search_examples`, `get_example`, `validat
 
 - Geometry is built from parametric primitives, not a general CAD kernel: no booleans, sweeps along arbitrary rails, lofts, surfaces, engraving, relief or mesh repair tools.
 - No STEP, Rhino `.3dm` or JewelCAD `.jcd` import; imported meshes are references only. No image or font import.
-- Halos offset the outline by scaling it (not an exact offset curve); stones are skipped where prongs pass.
+- Halo stones are skipped where prongs pass (the prong sits between two halo stones), so counts vary slightly with prong count.
 - The connectivity check compares bounding boxes, so it catches floating parts but not every gap. Stone/metal clearance is checked against prongs only.
 - Painted positions are stored as mm along the band, so changing the ring size moves them around the ring slightly.
 - Weights use typical alloy densities and deduct flush stone seats; carats are diamond estimates from size.
