@@ -54,7 +54,7 @@ export const statusOk = (m) => m.status() === "NoError" || m.status()?.value ===
 import { outline } from "./gems.js";
 import { stoneMatrix } from "./build.js";
 
-const FLUSH = new Set(["pave", "region", "stroke"]);
+const FLUSH = new Set(["pave", "region", "stroke", "surface"]);
 // cut-plane mapping: cross-section (X, Y) -> (x, z), extrusion Z -> down (-y)
 const DOWN = [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1];
 

@@ -5,6 +5,7 @@ import { readMesh } from "./meshio.js";
 import { prepareSculpt } from "./sculpt.js";
 import { toGeometry } from "./kernel.js";
 import { parseSize } from "./sizes.js";
+import { TriGrid, wallThickness } from "./surface.js";
 
 const cache = new Map();
 
@@ -21,7 +22,7 @@ export async function resolveSculpts(design, loadAsset) {
         const asset = await loadAsset(sc.src);
         if (!asset) throw new Error(`file ${sc.src} not found`);
         const { manifold, info } = prepareSculpt(readMesh(asset.bytes, asset.ext), sc, { innerDiameter: innerDiameterOf(design) });
-        cache.set(key, { geometry: toGeometry(manifold), info });
+        cache.set(key, withWall(toGeometry(manifold), info));
         manifold.delete();
       } catch (e) {
         cache.set(key, { error: e.message });
@@ -30,6 +31,15 @@ export async function resolveSculpts(design, loadAsset) {
     out.set(sculptKey(sc), cache.get(key));
   }
   return out;
+}
+
+// Attach per-vertex wall thickness (for the heatmap) and the thinnest spot.
+export function withWall(geometry, info) {
+  const grid = new TriGrid(geometry);
+  const wall = wallThickness(geometry, grid);
+  geometry.userData.thickness = wall.perVertex;
+  info.minWall = wall.min;
+  return { geometry, info, grid };
 }
 
 // Prepared result for one sculpt, from mesh bytes (used by the browser worker).

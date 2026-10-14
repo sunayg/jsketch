@@ -9,6 +9,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { parseSize } from "./sizes.js";
 import { CUTS, MELEE_SIZES, outline, spaceAlong } from "./gems.js";
 import { fixWinding, signedVolume } from "./geom.js";
+import { TriGrid } from "./surface.js";
 
 export { fixWinding, signedVolume };
 
@@ -337,6 +338,99 @@ function buildStroke(d, geom, o, pts, id, metal, stones, warnings) {
 
 // sculpts: Map id -> { geometry, info } of prepared (repaired) sculpt meshes,
 // or { pending: true } / { error } while loading. See sculpts.js.
+// ---- pavé on sculpt surfaces ----
+
+// Pack round stones of `dia` over the part of the surface within r of any dab.
+function surfaceFill(grid, dabs, r, dia, gap, id, occupied) {
+  const pitch = dia + gap;
+  const tri = new THREE.Triangle();
+  const centres = dabs.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+  const tris = new Set();
+  for (const c of centres) for (const t of grid.near(c, r + grid.cell)) tris.add(t);
+  // candidate points on the brushed surface, deduplicated on a fine grid
+  const seen = new Set();
+  const cand = [];
+  const step = pitch / 3;
+  for (const t of tris) {
+    grid.tri(t, tri.a, tri.b, tri.c);
+    const len = Math.max(tri.a.distanceTo(tri.b), tri.b.distanceTo(tri.c), tri.c.distanceTo(tri.a));
+    const u = Math.max(1, Math.ceil(len / step));
+    for (let i = 0; i <= u; i++) for (let j = 0; j <= u - i; j++) {
+      const q = tri.a.clone().addScaledVector(tri.b.clone().sub(tri.a), i / u).addScaledVector(tri.c.clone().sub(tri.a), j / u);
+      if (!centres.some((c) => c.distanceTo(q) <= r)) continue;
+      const key = `${Math.round(q.x / (step / 2))},${Math.round(q.y / (step / 2))},${Math.round(q.z / (step / 2))}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cand.push({ q, t });
+    }
+  }
+  // grow from the start of the stroke, so the layout follows the brush
+  cand.sort((a, b) => a.q.distanceTo(centres[0]) - b.q.distanceTo(centres[0]));
+  const placed = [];
+  const hash = new Map();
+  const hkey = (p) => [Math.floor(p.x / pitch), Math.floor(p.y / pitch), Math.floor(p.z / pitch)];
+  const tooClose = (p) => {
+    const [i, j, k] = hkey(p);
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let c = -1; c <= 1; c++) {
+      for (const o of hash.get(`${i + a},${j + b},${k + c}`) || []) if (o.distanceTo(p) < pitch - 1e-6) return true;
+    }
+    return false;
+  };
+  for (const { q, t } of cand) {
+    if (tooClose(q)) continue;
+    const n = grid.smoothNormal(q, dia * 0.6) || grid.normal(t);
+    // a sharp edge or crease under the stone (the local face disagrees with
+    // the averaged normal) is no place for a stone
+    if (grid.normal(t).dot(n) < 0.85) continue;
+    // the whole girdle must sit on the surface: no overhanging an edge
+    const u = new THREE.Vector3(1, 0, 0).cross(n);
+    if (u.lengthSq() < 1e-6) u.set(0, 1, 0).cross(n);
+    u.normalize();
+    const v = n.clone().cross(u);
+    let onSurface = true;
+    for (let k = 0; k < 8 && onSurface; k++) {
+      const a = (k / 8) * Math.PI * 2;
+      const sp = q.clone().addScaledVector(u, Math.cos(a) * dia * 0.5).addScaledVector(v, Math.sin(a) * dia * 0.5);
+      // over the same face (not a side face past an edge), and close to it
+      // and directly under the girdle point (not off to the side at an edge)
+      const cp = grid.closestPoint(sp, 0.6);
+      if (!cp || cp.dist > 0.2 || grid.normal(cp.tri).dot(n) < 0.85) onSurface = false;
+      else {
+        const off = sp.clone().sub(cp.point);
+        if (off.clone().addScaledVector(n, -off.dot(n)).length() > 0.05) onSurface = false;
+      }
+    }
+    if (!onSurface) continue;
+    const pos = q.clone().addScaledVector(n, -0.05);
+    if (occupied.some((o) => o.pos.distanceTo(pos) < (o.dia * CUTS[o.cut].aspect + dia) / 2 + gap)) continue;
+    // metal left under the culet: through the sculpt to its far side
+    const through = grid.raycast(q.clone().addScaledVector(n, -0.01), n.clone().negate(), 10, 0.02, true);
+    placed.push({ cut: "round", dia, role: "surface", obj: id, pos, normal: n, metalBelow: through === null ? null : through - 0.43 * dia - 0.05 });
+    const [i, j, k] = hkey(q);
+    const key = `${i},${j},${k}`;
+    (hash.get(key) || hash.set(key, []).get(key)).push(q);
+  }
+  return placed;
+}
+
+// Beads between neighbouring surface stones, sitting on the surface.
+function surfaceBeads(grid, stones, beadDia) {
+  const geos = [];
+  for (let i = 0; i < stones.length; i++) for (let j = i + 1; j < stones.length; j++) {
+    const a = stones[i], b = stones[j];
+    if (a.pos.distanceTo(b.pos) > (a.dia + b.dia) / 2 + Math.max(0.4, beadDia * 1.6)) continue;
+    const mid = a.pos.clone().add(b.pos).multiplyScalar(0.5);
+    const cp = grid.closestPoint(mid, 1);
+    if (!cp) continue;
+    const n = a.normal.clone().add(b.normal).normalize();
+    const at = cp.point.addScaledVector(n, beadDia * 0.3);
+    const g = new THREE.SphereGeometry(beadDia / 2, 8, 6);
+    g.translate(at.x, at.y, at.z);
+    geos.push(g);
+  }
+  return geos;
+}
+
 export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
   const size = parseSize(d.ring.size);
   const diameter = d.ring.diameter ?? size.innerDiameter;
@@ -372,6 +466,12 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
     }
   }
   if (!hasBand && (d.paint.length || d.strokes.length || d.regions.length)) warnings.push("pavé on the band needs a band: shank profile is none");
+  const gridOf = (scId) => {
+    const sc = d.sculpts.find((x) => x.id === scId);
+    const got = sc && sculpts.get(sculptKey(sc));
+    if (!got?.geometry) return null;
+    return (got.grid ||= new TriGrid(got.geometry));
+  };
 
   // centre stone and head (setting=none: a plain band, e.g. an eternity ring)
   const hasCentre = d.stone.setting !== "none";
@@ -485,6 +585,29 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
   for (const rg of d.regions) {
     fillRegion(rg, rg.pts, rg.id);
     if (rg.mirror === "yes") fillRegion(rg, mirrorPts(rg.pts), `${rg.id}~mirror`);
+  }
+
+  // pavé brushed onto sculpt surfaces
+  for (const sp of d.surfpaves) {
+    const grid = gridOf(sp.on);
+    if (!grid) continue; // the sculpt is still preparing (reported above)
+    for (const [dabs, id] of sp.mirror === "yes" ? [[sp.pts, sp.id], [sp.pts.map(([x, y, z]) => [-x, y, z]), `${sp.id}~mirror`]] : [[sp.pts, sp.id]]) {
+      const fill = (dd) => surfaceFill(grid, dabs, sp.r, dd, sp.gap, id, stones);
+      let row;
+      if (sp.dia === "auto") {
+        const best = autoFill(sp.min ?? 0.9, sp.max ?? 2, fill);
+        row = best ? best.stones : [];
+        if (!best) warnings.push(`surfpave ${id}: no stocked melee size fits where you painted`);
+      } else {
+        row = fill(sp.dia);
+        if (!row.length) warnings.push(`surfpave ${id}: no ${sp.dia} mm stones fit where you painted`);
+      }
+      stones.push(...row);
+      if (sp.setting === "bead" && row.length) {
+        const g = merged(surfaceBeads(grid, row, sp.bead));
+        if (g) metal.push({ name: `beads ${id}`, obj: id, geometry: g, bead: true });
+      }
+    }
   }
 
   // brushed pavé (paint lines)

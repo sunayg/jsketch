@@ -5,7 +5,7 @@ import { CUTS, caratOf, isStockedMelee, outline } from "./gems.js";
 import { signedVolume, openEdges } from "./geom.js";
 import { shankThicknessAt, EDGE } from "./build.js";
 
-const FLUSH = new Set(["pave", "region", "stroke"]);
+const FLUSH = new Set(["pave", "region", "stroke", "surface"]);
 
 const polyArea = (pts) => {
   let a = 0;
@@ -128,9 +128,12 @@ export function report(model, exact = null) {
 
   // band-set stones: metal under the culet, metal at the edge, and spacing
   const set = model.stones.filter((s) => s.w !== undefined && (FLUSH.has(s.role) || s.flush));
-  const under = set.map((s) => shankThicknessAt(d, model.geom, s.w) - 0.43 * s.dia - 0.05);
+  const under = [
+    ...set.map((s) => shankThicknessAt(d, model.geom, s.w) - 0.43 * s.dia - 0.05),
+    ...model.stones.filter((s) => s.role === "surface" && s.metalBelow !== null && s.metalBelow !== undefined).map((s) => s.metalBelow),
+  ];
   const thinUnder = under.filter((v) => v < 0.3);
-  if (thinUnder.length) checks.push({ level: "warn", text: `${thinUnder.length} band-set stone(s) leave only ${Math.max(0, Math.min(...thinUnder)).toFixed(2)} mm of metal under the culet (aim for 0.3 mm or more)` });
+  if (thinUnder.length) checks.push({ level: "warn", text: `${thinUnder.length} set stone(s) leave only ${Math.max(0, Math.min(...thinUnder)).toFixed(2)} mm of metal under the culet (aim for 0.3 mm or more)` });
   const edgeLeft = set.map((s) => width / 2 - Math.abs(s.w) - s.dia / 2).filter((v) => v >= -0.01 && v < EDGE - 0.01);
   if (edgeLeft.length) checks.push({ level: "warn", text: `${edgeLeft.length} band-set stone(s) leave under ${EDGE} mm of metal at the band edge (min ${Math.max(0, Math.min(...edgeLeft)).toFixed(2)} mm)` });
   const gaps = [d.pave.gap, ...d.strokes.map((x) => x.gap), ...d.regions.map((x) => x.gap)];
@@ -165,6 +168,9 @@ export function report(model, exact = null) {
   if (d.stone.setting !== "none" && d.stone.dia > width * 3) checks.push({ level: "warn", text: "Centre stone is very large for this band width" });
   for (const w of model.warnings || []) checks.push({ level: "warn", text: w });
   for (const [id, info] of Object.entries(model.sculptInfo || {})) {
+    if (info.minWall && info.minWall.mm < minWall) {
+      checks.push({ level: "error", text: `sculpt ${id}: wall is ${info.minWall.mm.toFixed(2)} mm at (${info.minWall.at.map((v) => v.toFixed(2)).join(", ")}), under the ${minWall} mm minimum; thicken it or hollow less` });
+    }
     if (info.unscaled) checks.push({ level: "warn", text: `sculpt ${id} is ${Math.max(...info.sizeBeforeRepair).toFixed(1)} mm across, which does not look like millimetres: use fit=ring or set scale=` });
     if (info.removedPieces?.length) checks.push({ level: "info", text: `sculpt ${id}: removed ${info.removedPieces.length} loose piece(s)` });
     if (info.notWatertight && info.method === "voxel") checks.push({ level: "info", text: `sculpt ${id} was not watertight; rebuilt as a solid (voxel ${info.voxel.toFixed(2)} mm)` });

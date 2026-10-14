@@ -39,7 +39,7 @@ export const TIPS = ["round", "pointed", "flat", "claw"];
 export const HALO_KINDS = ["single", "double", "hidden"];
 const YESNO = ["yes", "no"];
 // commands that can appear many times, each with a unique id
-export const LISTS = { accent: "accents", stroke: "strokes", region: "regions", sculpt: "sculpts" };
+export const LISTS = { accent: "accents", stroke: "strokes", region: "regions", sculpt: "sculpts", surfpave: "surfpaves" };
 
 // command -> { key: [type, min, max] | [enum values] }
 export const SCHEMA = {
@@ -69,6 +69,11 @@ export const SCHEMA = {
     repair: [["auto", "voxel", "none"]], voxel: ["num", 0.05, 0.5], close: ["int", 0, 10], smooth: ["int", 0, 5],
     keep: [["largest", "all"]], hollow: ["num", 0, 5], symmetrize: [["none", "x+", "x-"]], simplify: [YESNO],
   },
+  // pavé brushed onto a sculpt's surface: dabs are 3D points (mm)
+  surfpave: {
+    id: ["id"], on: ["ref"], pts: ["pts3"], r: ["num", 0.3, 10], dia: ["numauto", 0.8, 3], min: ["num", 0.8, 3], max: ["num", 0.8, 3],
+    gap: ["num", 0, 1], setting: [["bead", "none"]], bead: ["num", 0.2, 0.8], mirror: [YESNO],
+  },
   paint: { s: ["num", -200, 200], w: ["num", -10, 10], r: ["num", 0.3, 10] },
   rule: { min_wall: ["num", 0, 3], shrink: ["num", 0, 5] },
 };
@@ -86,6 +91,7 @@ export const defaultDesign = () => ({
   strokes: [],
   regions: [],
   sculpts: [],
+  surfpaves: [],
   pave: { dia: 1.3, gap: 0.15, bead: 0.35 },
   paint: [],
   rule: { min_wall: 0.8, shrink: 0 },
@@ -96,10 +102,11 @@ const LIST_DEFAULTS = {
   stroke: () => ({ dia: 1.3, gap: 0.15, setting: "bead", bead: 0.35, mirror: "no" }),
   region: () => ({ dia: 1.3, gap: 0.15, setting: "bead", bead: 0.35, mirror: "no" }),
   sculpt: () => ({ fit: "none", repair: "auto" }),
+  surfpave: () => ({ r: 1.5, dia: 1.3, gap: 0.15, setting: "bead", bead: 0.35, mirror: "no" }),
 };
 
 // "s:w,s:w,…" -> [[s, w], …]
-export const formatPts = (pts) => pts.map(([a, b]) => `${fmt(a)}:${fmt(b)}`).join(",");
+export const formatPts = (pts) => pts.map((p) => p.map(fmt).join(":")).join(",");
 function parsePts(val) {
   const pts = [];
   for (const pair of val.split(",")) {
@@ -245,6 +252,14 @@ export function parse(text) {
           ids.add(val);
           obj.id = val;
         }
+      } else if (rule[0] === "pts3") {
+        const pts = val.split(",").map((t) => t.split(":"));
+        if (!pts.every((p) => p.length === 3 && p.every((v) => NUMBER.test(v)))) (reported = true), err(line, "pts must look like x:y:z,x:y:z (mm)");
+        else if (pts.flat().some((v) => Math.abs(+v) > 100)) (reported = true), err(line, "pts out of range (within ±100 mm)");
+        else obj.pts = pts.map((p) => p.map(Number));
+      } else if (rule[0] === "ref") {
+        if (!/^[A-Za-z_][\w-]*$/.test(val)) err(line, `on= must name a sculpt id`);
+        else obj.on = val;
       } else if (rule[0] === "src") {
         // an asset id (16 hex digits) or a mesh file name next to the script
         if (!/^([0-9a-f]{16}|[\w./-]+\.(stl|obj|glb))$/i.test(val)) (reported = true), err(line, "src must be an asset id or a .stl, .obj or .glb file name");
@@ -269,12 +284,16 @@ export function parse(text) {
     if (isList) {
       if (obj.id === undefined) return reported ? undefined : err(line, `${cmd} needs an id, e.g. ${cmd} id=${cmd}1`);
       if (cmd === "sculpt" && !obj.src) return reported ? undefined : err(line, "sculpt needs src= (import a mesh first)");
+      if (cmd === "surfpave" && (!obj.on || !obj.pts?.length)) return reported ? undefined : err(line, "surfpave needs on=<sculpt id> and pts=x:y:z,…");
       const need = cmd === "region" ? 3 : cmd === "stroke" ? 2 : 0;
       if (need && (!obj.pts || obj.pts.length < need)) return reported ? undefined : err(line, `${cmd} needs pts with at least ${need} points`);
       d[LISTS[cmd]].push(obj);
     } else if (cmd === "paint") d.paint.push(obj);
     else d[cmd] = obj;
   });
+  for (const sp of d.surfpaves) {
+    if (!d.sculpts.some((sc) => sc.id === sp.on)) errors.push({ line: lineOf.surfpave ?? 1, message: `surfpave ${sp.id}: no sculpt with id ${sp.on}` });
+  }
   if (!nonEmpty) errors.push({ line: 1, message: "The script is empty: start with a design line, or pick one from the gallery" });
   if (d.pave.min !== undefined && d.pave.max !== undefined && d.pave.min > d.pave.max) {
     errors.push({ line: lineOf.pave, message: "pave min must not exceed max" });
