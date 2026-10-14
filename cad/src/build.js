@@ -109,6 +109,15 @@ function annulus(cut, dia, inOff, outOff, height, topY) {
   return g;
 }
 
+// Solid plate following the outline (offset by `off`), top face at topY.
+function annulusSolid(cut, dia, off, height, topY) {
+  const shape = new THREE.Shape(outline(cut, dia, off, 96).map(([x, z]) => new THREE.Vector2(x, z)));
+  const g = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, curveSegments: 1 });
+  g.rotateX(-Math.PI / 2);
+  g.translate(0, topY - height, 0);
+  return g;
+}
+
 function collar(cut, dia, wall, height, topY) {
   const shape = new THREE.Shape(outline(cut, dia, wall).map(([x, z]) => new THREE.Vector2(x, z)));
   shape.holes.push(new THREE.Path(outline(cut, dia, -0.02).map(([x, z]) => new THREE.Vector2(x, z)).reverse()));
@@ -165,9 +174,13 @@ function headParts({ cut, dia, setting, prongs = 4, tip = "round", baseY, girdle
     const bottom = hasSeat ? seatTop - 0.1 : baseY;
     parts.push({ name: "bezel", geometry: collar(cut, dia, wall, girdleY + 0.3 - bottom, girdleY + 0.3), thickness: wall });
     if (hasSeat) {
-      const seat = new THREE.CylinderGeometry(halfW * 0.7, halfW * 0.6, seatTop - baseY, 24);
+      // a column down into the band, capped by a plate under the culet that
+      // reaches out under the collar so the bezel is one piece with the band
+      const seat = new THREE.CylinderGeometry(halfW * 0.6, halfW * 0.6, seatTop - baseY, 24);
       seat.translate(0, (seatTop + baseY) / 2, 0);
       parts.push({ name: "seat", geometry: seat });
+      const plateT = Math.max(0.5, minWall);
+      parts.push({ name: "seat-plate", geometry: annulusSolid(cut, dia, wall * 0.5, plateT, seatTop), thickness: plateT });
     }
   } else if (setting === "illusion") {
     // a wide plate around the girdle makes the stone read larger

@@ -9,7 +9,9 @@
 // Exit codes: 0 ok, 1 script has errors, 2 usage or file problem, 3 checks failed.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { validate, measure, render, exportBytes } from "./node/tools.js";
+import { validate, measure, render, exportBytes, ready } from "./node/tools.js";
+
+await ready;
 
 const [cmd, file, ...rest] = process.argv.slice(2);
 const opt = (name, dflt) => {

@@ -53,7 +53,9 @@ function triangles(model) {
     }
   };
   const metal = new THREE.Color(METALS[model.design.ring.metal].color);
-  for (const m of model.metal) push(m.geometry, metal, "metal");
+  // the kernel's solid (seats cut) when available, else the parts
+  if (model.solidGeometry) push(model.solidGeometry, metal, "metal");
+  else for (const m of model.metal) push(m.geometry, metal, "metal");
   const gem = new THREE.Color("#cfe6ff");
   const cache = new Map();
   for (const s of model.stones) {

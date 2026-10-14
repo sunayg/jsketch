@@ -16,7 +16,15 @@ const flat = (g) => {
 };
 
 // which: "metal" | "stones"; opts.obj limits the bake to one object (per-part export)
+// When the model carries the kernel's solid (model.solidGeometry), whole-piece
+// metal exports use it: one watertight shell with the stone seats cut.
 export function bakeGeometry(model, which, shrinkPercent = model.design.rule.shrink || 0, opts = {}) {
+  if (which === "metal" && !opts.obj && model.solidGeometry) {
+    const g = model.solidGeometry.clone();
+    const k = 1 + shrinkPercent / 100;
+    if (k !== 1) g.scale(k, k, k);
+    return g;
+  }
   const keep = (x) => !opts.obj || x.obj === opts.obj || x.obj === `${opts.obj}~mirror` || (x.obj || "").startsWith(`${opts.obj}~`);
   const geos = which === "stones"
     ? model.stones.filter(keep).map((s) => flat(stoneGeometry(s.cut, s.dia)).applyMatrix4(stoneMatrix(s)))

@@ -7,6 +7,7 @@ import { DESIGNS, COMPONENTS, search } from "../src/library.js";
 import { interpret } from "../src/assistant.js";
 import { stlBytes, to3mf, bundle, sizeRun, sizeRange } from "../src/export.js";
 import { renderPng } from "./render.js";
+import { initKernel, solidify, toGeometry } from "../src/kernel.js";
 
 // Round floats so JSON stays readable (20.9196 rather than 20.919600000000003).
 export const tidy = (v) =>
@@ -17,6 +18,9 @@ export function validate(text) {
   return { ok: errors.length === 0, errors };
 }
 
+// The solid kernel (Manifold) gives exact volumes and watertight exports.
+export const ready = initKernel();
+
 function compile(text, quality) {
   const { design, errors } = parse(text);
   if (errors.length) {
@@ -24,12 +28,17 @@ function compile(text, quality) {
     e.errors = errors;
     throw e;
   }
-  return { design, model: build(design, { quality }) };
+  const model = build(design, { quality });
+  const exact = solidify(model);
+  model.solidGeometry = toGeometry(exact.solid);
+  model.exact = exact;
+  exact.free();
+  return { design, model };
 }
 
 export function measure(text) {
   const { model } = compile(text);
-  return tidy(report(model));
+  return tidy(report(model, model.exact));
 }
 
 export function stoneFit(text) {

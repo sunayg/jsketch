@@ -9,6 +9,8 @@ import { resolve, join, basename } from "node:path";
 import { LANGUAGE_REFERENCE } from "./src/docs.js";
 import * as T from "./node/tools.js";
 
+await T.ready;
+
 const OUT = resolve(process.env.JEWELSCRIPT_OUT || "jewelscript-out");
 const design = { type: "string", description: "JewelScript design text" };
 const TOOLS = [

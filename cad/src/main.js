@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import { parse, serialize, mergeText, defaultDesign, setField, METALS, PROFILES, SETTINGS, TIPS, HALO_KINDS, LISTS, SCHEMA } from "./script.js";
 import { WEIGHT, GEM_WEIGHT, LENGTH, weightIn, gemIn, lengthIn } from "./units.js";
 import { build } from "./build.js";
@@ -78,6 +79,70 @@ function redo() {
 }
 
 const say = (msg) => ($("hint").textContent = msg);
+
+// ---------- exact solid (Manifold, in a worker) ----------
+// The viewport and a quick estimate update instantly; the worker then builds
+// the true solid (parts unioned, seats cut) and the report switches to exact.
+let worker = null;
+try {
+  worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+} catch {
+  worker = null;
+}
+const exactState = { busy: false, queued: null, current: null, waiters: [], seq: 0 };
+function requestExact(text) {
+  if (!worker) return;
+  exactState.queued = text;
+  clearTimeout(exactState.timer);
+  exactState.timer = setTimeout(pumpExact, 250);
+  setExactStatus("Computing exact solid…");
+}
+function pumpExact() {
+  if (exactState.busy || exactState.queued === null) return;
+  const text = exactState.queued;
+  exactState.queued = null;
+  exactState.busy = true;
+  worker.postMessage({ id: ++exactState.seq, text });
+  exactState.inflight = text;
+}
+if (worker) {
+  worker.onmessage = (e) => {
+    exactState.busy = false;
+    const text = exactState.inflight;
+    if (!e.data.error && text === textarea.value && model) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(e.data.positions, 3));
+      g.computeVertexNormals();
+      model.solidGeometry = g;
+      model.exact = e.data.exact;
+      exactState.current = text;
+      lastReport = report(model, e.data.exact);
+      renderSheet(lastReport);
+      renderObjects();
+      setExactStatus(`Exact solid in ${Math.round(e.data.exact.ms)} ms`);
+      for (const w of exactState.waiters.splice(0)) w(true);
+    } else if (e.data.error) {
+      setExactStatus("Exact solid unavailable; showing estimates");
+    }
+    pumpExact();
+  };
+  worker.onerror = () => {
+    worker = null;
+    setExactStatus("Exact solid unavailable; showing estimates");
+  };
+}
+function setExactStatus(t) {
+  const el = document.getElementById("exact-status");
+  if (el) el.textContent = t;
+}
+// Resolves once the exact solid for the current script is in (or gives up).
+function ensureExact() {
+  if (!worker || exactState.current === textarea.value) return Promise.resolve(!!worker);
+  return new Promise((res) => {
+    exactState.waiters.push(res);
+    setTimeout(() => res(false), 20000);
+  });
+}
 
 // ---------- viewer and tools ----------
 const nextId = (prefix) => {
@@ -180,6 +245,8 @@ function rebuild({ record = true } = {}) {
   viewer.setModel(model);
   lastReport = report(model);
   $("rebuild").textContent = `Rebuilt in ${Math.round(performance.now() - t0)} ms`;
+  exactState.current = null;
+  requestExact(textarea.value);
   renderSheet(lastReport);
   renderParams();
   renderObjects();
@@ -454,7 +521,7 @@ function renderSheet(r) {
     row("Gem unit", unitSelect("gem", GEM_WEIGHT)),
     row("Length unit", unitSelect("length", LENGTH)),
     row("Metal", el("span", { textContent: `${r.metal.name} (${fx(r.metal.density, 2)} g/cm³)` })),
-    row("Weight", el("strong", { textContent: `${fx(weightIn(r.metal.weightG, prefs.weight), prefs.weight === "g" ? 2 : 3)} ${WEIGHT[prefs.weight].label}` })),
+    row(r.metal.exact ? "Weight (exact)" : "Weight (estimate)", el("strong", { textContent: `${fx(weightIn(r.metal.weightG, prefs.weight), prefs.weight === "g" ? 2 : 3)} ${WEIGHT[prefs.weight].label}` })),
     row("Inside diameter", el("span", { textContent: `${fx(lengthIn(r.innerDiameter, prefs.length), prefs.length === "in" ? 3 : 2)} ${prefs.length}` })),
     row("Thinnest shank wall", el("span", { textContent: `${fx(lengthIn(r.minWall.shank, prefs.length), prefs.length === "in" ? 3 : 2)} ${prefs.length}` })),
     ...(r.centre ? [row("Centre stone", el("span", { textContent: `${r.centre.cut} ${fx(r.centre.dia, 1)}×${fx(r.centre.length, 1)} mm` }))] : []),
@@ -464,7 +531,8 @@ function renderSheet(r) {
     table,
     el("h2", { textContent: "Checks" }),
     ...r.checks.map((c) => el("div", { className: `check ${c.level}`, textContent: c.text })),
-    el("p", { className: "note", textContent: "Weights use typical alloy densities and deduct flush stone seats; carats are diamond estimates." }),
+    el("p", { className: "note", id: "exact-status" }),
+    el("p", { className: "note", textContent: r.metal.exact ? "Exact: all metal unioned into one solid with every stone seat cut. Typical alloy densities; carats are diamond estimates." : "Estimate until the exact solid is ready. Typical alloy densities; carats are diamond estimates." }),
   );
 }
 
@@ -508,7 +576,12 @@ async function runExport() {
     commit();
   }
   const q = $("ex-quality").value;
-  const m = build(design, { quality: q });
+  let m = build(design, { quality: q });
+  // whole-piece metal comes from the exact solid (one watertight shell, seats cut)
+  if (["stl", "3mf", "glb", "obj", "bundle"].includes($("ex-format").value) && !$("ex-part").value) {
+    say("Waiting for the exact solid…");
+    if (q === "standard" && (await ensureExact()) && model?.solidGeometry) m = Object.assign(m, { solidGeometry: model.solidGeometry });
+  }
   const f = $("ex-format").value;
   const part = $("ex-part").value || undefined;
   const suffix = part ? `-${part}` : "";
@@ -789,4 +862,4 @@ textarea.value = store.get(DRAFT) || store.get() || serialize(defaultDesign());
 rebuild();
 history.past = [];
 history.last = textarea.value;
-window.__cad = { viewer, get design() { return design; }, get model() { return model; }, get report() { return lastReport; } };
+window.__cad = { viewer, ensureExact, get design() { return design; }, get model() { return model; }, get report() { return lastReport; } };

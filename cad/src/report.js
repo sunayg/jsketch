@@ -27,7 +27,10 @@ function shankMinWall(d, geom) {
   return best;
 }
 
-export function report(model) {
+// `exact` (optional) comes from kernel.solidify(): the true volume of the
+// unioned metal with seats cut, and its separate pieces. Without it the
+// report estimates (sum of parts minus approximate seats).
+export function report(model, exact = null) {
   const d = model.design;
   const metal = METALS[d.ring.metal];
   const density = d.ring.density ?? metal.density;
@@ -42,8 +45,9 @@ export function report(model) {
     const v = Math.abs(signedVolume(m.geometry));
     partVolumes.set(m.obj || m.name, (partVolumes.get(m.obj || m.name) || 0) + v);
   }
-  const grossMm3 = [...partVolumes.values()].reduce((a, b) => a + b, 0);
-  const volumeMm3 = Math.max(0, grossMm3 - seatVolumeMm3);
+  const sumMm3 = [...partVolumes.values()].reduce((a, b) => a + b, 0);
+  const grossMm3 = exact ? exact.gross : sumMm3;
+  const volumeMm3 = exact ? exact.volume : Math.max(0, sumMm3 - seatVolumeMm3);
   const weightG = (volumeMm3 / 1000) * density;
   const parts = [...partVolumes.entries()].map(([obj, v]) => ({ obj, volumeMm3: v, weightG: (v / 1000) * density }));
 
@@ -86,8 +90,14 @@ export function report(model) {
     const c = Math.abs((s.normal.x * s.pos.x + s.normal.y * s.pos.y) / r);
     return 0.43 * s.dia * c + (s.dia / 2) * Math.sqrt(Math.max(0, 1 - c * c));
   };
-  // floating metal: every part must touch the shank through a chain of parts
-  // (bounding boxes, slightly grown, must overlap; a coarse but useful test)
+  if (exact) {
+    for (const name of exact.invalid) checks.push({ level: "error", text: `${name} is not a valid solid` });
+    for (const p of exact.pieces.slice(1)) {
+      checks.push({ level: "error", text: `A ${p.volume.toFixed(2)} mm³ piece of metal near (${p.center.map((v) => v.toFixed(1)).join(", ")}) is not connected to the rest${p.parts.length ? ` (${p.parts.slice(0, 3).join(", ")})` : ""}` });
+    }
+  }
+  // without the kernel: every part must touch the shank through a chain of
+  // parts (bounding boxes, slightly grown, must overlap; a coarse test)
   const boxes = model.metal.map((m) => {
     m.geometry.computeBoundingBox();
     return m.geometry.boundingBox.clone().expandByScalar(0.05);
@@ -100,7 +110,7 @@ export function report(model) {
       if ([...reached].some((j) => boxes[j].intersectsBox(boxes[i]))) reached.add(i), (grew = true);
     }
   }
-  const floating = model.metal.filter((_, i) => !reached.has(i));
+  const floating = exact ? [] : model.metal.filter((_, i) => !reached.has(i));
   for (const m of floating) checks.push({ level: "error", text: `${m.name} is not connected to the rest of the metal` });
 
   // stones that run into prongs of another stone
@@ -161,7 +171,7 @@ export function report(model) {
     innerDiameter: model.geom.innerDiameter,
     outerDiameter: ro * 2,
     heightMm: ro * 2 + 0.5 + 0.43 * d.stone.dia + 0.16 * d.stone.dia + 0.3,
-    metal: { name: metal.label, density, volumeMm3, grossMm3, seatVolumeMm3, weightG },
+    metal: { name: metal.label, density, volumeMm3, grossMm3, seatVolumeMm3: exact ? exact.gross - exact.volume : seatVolumeMm3, weightG, exact: !!exact },
     parts,
     paveDia: model.paveDia,
     shrink: d.rule.shrink,
