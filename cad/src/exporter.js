@@ -3,7 +3,8 @@
 // write the file. Needs the solid kernel (initKernel) to be ready.
 import { build } from "./build.js";
 import { solidify, toGeometry } from "./kernel.js";
-import { resolveSculpts, innerDiameterOf, radialShift } from "./sculpts.js";
+import { resolveSculpts, innerDiameterOf } from "./sculpts.js";
+import { report } from "./report.js";
 import { stlBytes, to3mf, bundle, glbBytes, objText } from "./export.js";
 import { formatSize, parseSize } from "./sizes.js";
 import { zipStore } from "./zip.js";
@@ -38,6 +39,7 @@ export async function exportDesign(design, text, format, opts = {}) {
     if (!sizes?.length) throw new Error("a size run needs a list of sizes");
     const files = {};
     const baseInner = innerDiameterOf(d);
+    const problems = [];
     for (const size of sizes) {
       const s = parseSize(size);
       if (!s) throw new Error(`Bad size ${size}`);
@@ -45,17 +47,15 @@ export async function exportDesign(design, text, format, opts = {}) {
       ds.ring.size = formatSize(s.system, s.n);
       delete ds.ring.diameter;
       delete ds.exprs?.["ring.diameter"];
-      // fitted sculpts keep their head and section; only the bore changes,
-      // and pavé painted on them moves with the surface
-      const dr = (innerDiameterOf(ds) - baseInner) / 2;
-      for (const sp of ds.surfpaves) {
-        if (ds.sculpts.find((x) => x.id === sp.on)?.fit !== "ring") continue;
-        sp.pts = sp.pts.map(([x, y, z]) => [...radialShift(x, y, dr, baseInner / 2), z]);
-      }
+      // sculpts keep their head and section (see resize.js); every size is
+      // checked like the design itself, and a size that fails stops the run
       const m = await compileDesign(ds, { quality, loadAsset, baseInner });
-      if (m.errors?.length) throw new Error(`${ds.ring.size}: ${m.errors[0]}`);
+      const r = report(m, m.exact);
+      const bad = r.checks.filter((c) => c.level === "error");
+      if (bad.length) problems.push(`${ds.ring.size}: ${bad.map((c) => c.text).join("; ")}`);
       files[`${ds.name.replace(/[^\w-]+/g, "_")}_${ds.ring.size}.stl`] = stlBytes(m, "metal");
     }
+    if (problems.length) throw new Error(`Not exported; ${problems.length} size(s) fail the checks: ${problems.join(" | ")}`);
     return { bytes: zipStore(files), ext: "zip" };
   }
   const model = opts.model ?? (await compileDesign(d, { quality, loadAsset }));

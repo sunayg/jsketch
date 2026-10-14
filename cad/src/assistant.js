@@ -29,7 +29,7 @@ function normalise(text) {
   return t;
 }
 
-const NEG = String.raw`(?:no|not|never|without|remove|delete|drop|lose|take\s+off|take\s+away|get\s+rid\s+of)\b(?:(?!\bbut\b|\binstead\b|\brather\b|\bswap\b|\bwith\b)[^.]){0,20}?\b`;
+const NEG = String.raw`(?:no|not|never|without|remove|delete|drop|lose|take\s+off|take\s+away|get\s+rid\s+of)\b(?:(?!\bbut\b|\binstead\b|\brather\b|\bswap\b|\bwith\b|\buse\b|\bmake\b|\bwant\b|\bprefer\b|\bpick\b|\bchoose\b|\bswitch\b|\bgo\b)[^.]){0,20}?\b`;
 
 export function interpret(text, design) {
   const d = structuredClone(design);
@@ -51,34 +51,41 @@ export function interpret(text, design) {
     change("ring", `ring size ${d.ring.size}`);
   }
 
-  // metal: only alloys we stock; never substitute silently
-  const gold = /\b(9|10|14|18|22)\s*(?:k|kt|karat|carat)\b(?:\s+(white|rose|yellow))?(?:\s+gold)?|\b(white|rose|yellow)\s+gold\b/.exec(t);
+  // metal: only alloys we stock; never substitute silently. "not X" rules a
+  // metal out rather than choosing it.
+  const esc = (x) => x.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
   const metalWords = [["platinum", "platinum"], ["palladium", "palladium"], ["titanium", "titanium"], ["(?:stainless|steel)", "stainless"], ["(?:sterling|silver)", "silver-925"], ["brass", "brass"], ["bronze", "bronze"], ["copper", "copper"]];
-  // "not platinum" rules a metal out rather than choosing it
-  let ruledOut = null;
+  const wanted = [], ruled = []; // { key, label, matches(metal) }
   for (const [w, key] of metalWords) {
+    if (!new RegExp(`\\b${w}\\b`).test(t)) continue;
     const neg = negated(w);
-    if (!neg) continue;
-    use(neg);
-    if (d.ring.metal === key) ruledOut = key;
-    else notes.push(`The ring is not ${METALS[key].label} now (it is ${METALS[d.ring.metal].label}), so there was nothing to change`);
+    const item = { key, label: METALS[key].label, matches: (m) => m === key };
+    if (neg) use(neg), ruled.push(item);
+    else wanted.push(item), used.add(key.split("-")[0]).add("sterling").add("steel").add("stainless");
   }
-  const named = metalWords.map(([w, key]) => [new RegExp(`\\b${w}\\b`), key, w]).find(([re, , w]) => re.test(t) && !negated(w));
-  if (named) {
-    d.ring.metal = named[1];
-    used.add(named[1].split("-")[0]).add("sterling").add("steel").add("stainless");
-    change("ring", `metal ${METALS[named[1]].label}`);
-  } else if (gold) {
-    const karat = gold[1] || "18";
-    const colour = gold[2] || gold[3] || "yellow";
-    const key = `${karat}k-${colour}`;
-    use(gold);
-    if (METALS[key]) {
-      d.ring.metal = key;
-      change("ring", `metal ${METALS[key].label}`);
-    } else notes.push(`${karat}k ${colour} gold is not in the alloy list, so the metal stays ${METALS[d.ring.metal].label}`);
+  for (const g of t.matchAll(/\b(9|10|14|18|22)\s*(?:k|kt|karat|carat)\b(?:\s+(white|rose|yellow))?(?:\s+gold)?|\b(white|rose|yellow)\s+gold\b/g)) {
+    const karat = g[1], colour = g[2] || g[3] || "yellow";
+    const key = `${karat || "18"}k-${colour}`;
+    const item = { key, label: `${karat ? `${karat}k ` : ""}${colour} gold`, matches: (m) => (karat ? m === key : m.endsWith(`k-${colour}`)) };
+    const neg = negated(esc(g[0]));
+    use(g);
+    if (neg) use(neg), ruled.push(item);
+    else wanted.push(item);
   }
-  if (ruledOut && d.ring.metal === ruledOut) notes.push(`You ruled out ${METALS[ruledOut].label} but did not say which metal instead, so it is unchanged; name one (for example 18k white gold)`);
+  const pick = wanted.find((w) => !ruled.some((r) => r.matches(w.key)));
+  if (pick) {
+    if (!METALS[pick.key]) notes.push(`${pick.label} is not in the alloy list, so the metal stays ${METALS[d.ring.metal].label}`);
+    else if (d.ring.metal === pick.key) notes.push(`The ring is already ${METALS[pick.key].label}`);
+    else {
+      d.ring.metal = pick.key;
+      change("ring", `metal ${METALS[pick.key].label}`);
+    }
+  } else {
+    for (const r of ruled) {
+      if (r.matches(d.ring.metal)) notes.push(`You ruled out ${METALS[d.ring.metal].label} but did not say which metal instead, so it is unchanged; name one (for example ${d.ring.metal.includes("k-") ? "platinum" : "18k white gold"})`);
+      else notes.push(`The ring is not ${r.label} now (it is ${METALS[d.ring.metal].label}), so there was nothing to change`);
+    }
+  }
 
   // plain band / eternity
   if (/\beternity\b/.test(t)) {

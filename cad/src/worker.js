@@ -36,7 +36,11 @@ self.onmessage = async (e) => {
       if (got.error) throw new Error(got.error);
       const positions = Float32Array.from(got.geometry.attributes.position.array);
       const thickness = Float32Array.from(got.geometry.userData.thickness);
-      self.postMessage({ kind: "sculpt", id: msg.id, positions, thickness, info: { ...got.info, ms: performance.now() - t0 } }, [positions.buffer, thickness.buffer]);
+      const basePositions = got.shift ? Float32Array.from(got.base.geometry.attributes.position.array) : null;
+      self.postMessage(
+        { kind: "sculpt", id: msg.id, positions, thickness, basePositions, shift: got.shift, info: { ...got.info, ms: performance.now() - t0 } },
+        [positions.buffer, thickness.buffer, ...(basePositions ? [basePositions.buffer] : [])],
+      );
       return;
     }
     const { design, errors } = parse(msg.text);

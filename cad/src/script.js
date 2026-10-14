@@ -63,7 +63,7 @@ export const SCHEMA = {
     setting: [["bead", "none"]], bead: ["num", 0.2, 0.8], mirror: [YESNO],
   },
   sculpt: {
-    id: ["id"], src: ["src"], fit: [["ring", "none"]], scale: ["num", 0.0001, 10000],
+    id: ["id"], src: ["src"], fit: [["ring", "none"]], at: ["size"], scale: ["num", 0.0001, 10000],
     x: ["num", -100, 100], y: ["num", -100, 100], z: ["num", -100, 100],
     rx: ["num", -360, 360], ry: ["num", -360, 360], rz: ["num", -360, 360],
     repair: [["auto", "voxel", "none"]], voxel: ["num", 0.05, 0.5], close: ["int", 0, 10], smooth: ["int", 0, 5],

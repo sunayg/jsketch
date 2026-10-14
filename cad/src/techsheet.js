@@ -27,7 +27,8 @@ function dimensioned(view, units) {
 // the top; stones on the band are drawn on the band unrolled flat (so the
 // shoulders don't stack); anything else (sculpt pavé) from the front.
 export function gemMapSvg(model, report, size = 420) {
-  const groupIndex = new Map(report.stones.map((g, i) => [`${g.role}|${g.cut}|${g.dia}`, i + 1]));
+  const groupIndex = new Map(report.stones.map((g, i) => [`${g.role}|${g.obj ?? ""}|${g.cut}|${g.dia}`, i + 1]));
+  const objOf = (s) => (["accent", "stroke", "region", "surface"].includes(s.role) ? String(s.obj).split("~")[0] : "");
   const top = [], band = [], front = [];
   for (const s of model.stones) {
     if (s.s !== undefined && s.w !== undefined && s.role !== "centre") band.push(s);
@@ -47,7 +48,7 @@ export function gemMapSvg(model, report, size = 420) {
         const [rx, rz] = [ox * Math.cos(t) - oz * Math.sin(t), ox * Math.sin(t) + oz * Math.cos(t)];
         return `${(size / 2 + (x + rx) * k).toFixed(1)},${(size / 2 + (y + rz) * k).toFixed(1)}`;
       }).join(" ");
-      return `<polygon points="${poly}" fill="${color}22" stroke="${color}" stroke-width="0.8"><title>${esc(`${groupIndex.get(`${s.role}|${s.cut}|${Math.round(s.dia * 100) / 100}`)}: ${s.role} ${s.cut} ${s.dia} mm`)}</title></polygon>`;
+      return `<polygon points="${poly}" fill="${color}22" stroke="${color}" stroke-width="0.8"><title>${esc(`${groupIndex.get(`${s.role}|${objOf(s)}|${s.cut}|${Math.round(s.dia * 100) / 100}`)}: ${s.role} ${s.cut} ${s.dia} mm`)}</title></polygon>`;
     }).join("");
     return `<figure><svg class="gemmap" viewBox="0 0 ${size} ${size}" role="img" aria-label="Gem map, ${esc(title)}">${shapes}</svg><figcaption>${esc(title)} · ${stones.length} stone${stones.length > 1 ? "s" : ""}</figcaption></figure>`;
   };
@@ -67,7 +68,7 @@ export function techSheetHtml({ design, report, views = [], gemMap = "", units, 
   const fmtW = (g) => `${weightIn(g, u.weight).toFixed(u.weight === "g" ? 2 : 3)} ${WEIGHT[u.weight].label}`;
   const fmtL = (mm) => `${lengthIn(mm, u.length).toFixed(u.length === "in" ? 3 : 2)} ${LENGTH[u.length].label}`;
   const stoneRows = report.stones
-    .map((s, i) => `<tr><td>${i + 1}</td><td><span class="dot" style="background:${ROLE_COLOR[s.role] || "#5f6368"}"></span>${esc(s.role)}</td><td>${esc(s.cut)}</td><td class="n">${s.dia.toFixed(2)}</td><td class="n">${s.count}</td><td class="n">${gemIn(s.each, u.gem).toFixed(gd)}</td><td class="n">${gemIn(s.total, u.gem).toFixed(gd)}</td></tr>`)
+    .map((s, i) => `<tr><td>${i + 1}</td><td><span class="dot" style="background:${ROLE_COLOR[s.role] || "#5f6368"}"></span>${esc(s.role)}${s.obj ? ` ${esc(s.obj)}` : ""}</td><td>${esc(s.cut)}</td><td class="n">${s.dia.toFixed(2)}</td><td class="n">${s.count}</td><td class="n">${gemIn(s.each, u.gem).toFixed(gd)}</td><td class="n">${gemIn(s.total, u.gem).toFixed(gd)}</td></tr>`)
     .join("");
   const viewHtml = views
     .map((v) => `<figure><div class="view"><img src="${v.url}" alt="${esc(v.name)} view"/>${v.mmPerPx ? dimensioned(v, u) : ""}</div><figcaption>${esc(v.name)}</figcaption></figure>`)

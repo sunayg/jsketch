@@ -55,8 +55,10 @@ export function report(model, exact = null) {
   const groups = new Map();
   for (const s of model.stones) {
     const dia = Math.round(s.dia * 100) / 100;
-    const key = `${s.role}|${s.cut}|${dia}`;
-    groups.set(key, { role: s.role, cut: s.cut, dia, count: (groups.get(key)?.count || 0) + 1, each: caratOf(s.cut, s.dia) });
+    // named objects (side stones, rows, regions, sculpt pavé) are listed by id
+    const obj = ["accent", "stroke", "region", "surface"].includes(s.role) ? String(s.obj).split("~")[0] : undefined;
+    const key = `${s.role}|${obj ?? ""}|${s.cut}|${dia}`;
+    groups.set(key, { role: s.role, ...(obj ? { obj } : {}), cut: s.cut, dia, count: (groups.get(key)?.count || 0) + 1, each: caratOf(s.cut, s.dia) });
   }
   const stoneList = [...groups.values()].map((g) => ({ ...g, total: g.count * g.each }));
   const totalCt = stoneList.reduce((s, g) => s + g.total, 0);
@@ -122,11 +124,15 @@ export function report(model, exact = null) {
     const p = m.geometry.attributes.position.array;
     const seen = new Uint8Array(SECT);
     let rmin = Infinity;
-    for (let i = 0; i < p.length; i += 3) {
-      const r = Math.hypot(p[i], p[i + 1]);
-      if (r < rmin) rmin = r;
-      seen[Math.min(SECT - 1, Math.floor(((Math.atan2(p[i + 1], p[i]) + Math.PI) / (2 * Math.PI)) * SECT))] = 1;
+    const sector = (a) => Math.min(SECT - 1, Math.floor(((a + Math.PI) / (2 * Math.PI)) * SECT));
+    for (let i = 0; i < p.length; i += 3) rmin = Math.min(rmin, Math.hypot(p[i], p[i + 1]));
+    // every sector a triangle spans counts (a coarse mesh has few corners)
+    for (let t = 0; t < p.length; t += 9) {
+      const a = [0, 3, 6].map((o) => Math.atan2(p[t + o + 1], p[t + o])).sort((x, y) => x - y);
+      if (a[2] - a[0] > Math.PI) continue; // straddles the -x axis: corners suffice
+      for (let k = sector(a[0]); k <= sector(a[2]); k++) seen[k] = 1;
     }
+    for (let i = 0; i < p.length; i += 3) seen[sector(Math.atan2(p[i + 1], p[i]))] = 1;
     if (seen.reduce((a, v) => a + v, 0) >= SECT * 0.9 && rmin > ri * 0.5) encircled = true;
     const info = model.sculptInfo?.[m.obj];
     if (info) info.boreMeasured = +(2 * rmin).toFixed(3);

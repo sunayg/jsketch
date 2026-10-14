@@ -87,11 +87,12 @@ test("voxel repair keeps the bore at the ring size and a hollow wall at its thic
 
   const solid = prepareSculpt(soupOf(band()), { fit: "ring", repair: "voxel" }, { innerDiameter: TARGET });
   const hollow = prepareSculpt(soupOf(band()), { fit: "ring", hollow: 0.5 }, { innerDiameter: TARGET });
-  // shell of a tube r=1.41 with a 0.5 mm wall: 1 - (0.91/1.41)^2 of the solid
+  // shell of a tube r=1.41 with a wall of at least 0.5 mm (half a voxel is
+  // added so no spot comes out thinner): about 1 - (0.835/1.41)^2 of the solid
   const ratio = hollow.manifold.volume() / solid.manifold.volume();
-  assert.ok(Math.abs(ratio - (1 - (0.91 / 1.41) ** 2)) < 0.05, `hollow/solid ${ratio}`);
+  assert.ok(Math.abs(ratio - (1 - (0.835 / 1.41) ** 2)) < 0.05, `hollow/solid ${ratio}`);
   const prepared = withWall(toGeometry(hollow.manifold), hollow.info);
-  assert.ok(prepared.info.minWall.mm > 0.42 && prepared.info.minWall.mm < 0.56, `wall ${prepared.info.minWall.mm}`);
+  assert.ok(prepared.info.minWall.mm >= 0.5 && prepared.info.minWall.mm < 0.62, `wall ${prepared.info.minWall.mm}`);
   solid.manifold.delete();
   hollow.manifold.delete();
 });

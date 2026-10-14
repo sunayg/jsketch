@@ -6,27 +6,35 @@ import { prepareSculpt } from "./sculpt.js";
 import { toGeometry } from "./kernel.js";
 import { parseSize } from "./sizes.js";
 import { TriGrid, wallThickness } from "./surface.js";
+import { radialShift } from "./resize.js";
+export { radialShift, radialUnshift, shiftFrame } from "./resize.js";
 
 const cache = new Map();
 
 export const innerDiameterOf = (d) => d.ring.diameter ?? parseSize(d.ring.size).innerDiameter;
 
+// The inside diameter a sculpt was made for: its at= size (set when it is
+// imported), else `fallback` (a size run's starting size), else the
+// design's own size. At any other size the sculpt is resized the way a
+// jeweller sizes a ring (see radialShift).
+export const sculptBaseInner = (design, sc, fallback) => (sc.at ? parseSize(sc.at).innerDiameter : fallback ?? innerDiameterOf(design));
+
 // loadAsset(src) -> { bytes: Uint8Array, ext } (async). Returns the Map that
 // build() takes. Uses the solid kernel, so call initKernel() first.
-// opts.baseInner: fit ring sculpts at this inside diameter and then open or
-// close only the bore to the design's size (a size run: the head and the
-// band's section stay as designed, as a jeweller sizes a ring).
+// Each entry: { geometry, info } at the design's size, plus `base` (the
+// prepared sculpt at its own size) and the shift { dr, ri } between them.
+// opts.baseInner: the fallback base size for sculpts without at=.
 export async function resolveSculpts(design, loadAsset, opts = {}) {
   const out = new Map();
   const inner = innerDiameterOf(design);
   for (const sc of design.sculpts) {
-    const fitInner = sc.fit === "ring" && opts.baseInner ? opts.baseInner : inner;
-    const key = sculptKey(sc) + `|${sc.fit === "ring" ? fitInner.toFixed(4) : ""}`;
+    const base = sculptBaseInner(design, sc, opts.baseInner);
+    const key = sculptKey(sc) + `|${sc.fit === "ring" ? base.toFixed(4) : ""}`;
     if (!cache.has(key)) {
       try {
         const asset = await loadAsset(sc.src);
         if (!asset) throw new Error(`file ${sc.src} not found`);
-        const { manifold, info } = prepareSculpt(readMesh(asset.bytes, asset.ext), sc, { innerDiameter: fitInner });
+        const { manifold, info } = prepareSculpt(readMesh(asset.bytes, asset.ext), sc, { innerDiameter: base });
         cache.set(key, withWall(toGeometry(manifold), info));
         manifold.delete();
       } catch (e) {
@@ -34,39 +42,27 @@ export async function resolveSculpts(design, loadAsset, opts = {}) {
       }
     }
     let got = cache.get(key);
-    if (got.geometry && Math.abs(fitInner - inner) > 1e-6) got = resized(got, (inner - fitInner) / 2, fitInner / 2);
+    const dr = (inner - base) / 2;
+    if (got.geometry && Math.abs(dr) > 1e-6) {
+      const rkey = `${key}|at ${inner.toFixed(4)}`;
+      if (!cache.has(rkey)) cache.set(rkey, resized(got, dr, base / 2));
+      got = cache.get(rkey);
+    } else if (got.geometry) got = { ...got, base: got, shift: null };
     out.set(sculptKey(sc), got);
   }
   return out;
 }
 
-// Resize a fitted sculpt (head at +Y) the way a jeweller does: the top,
-// where the head is, moves up rigidly by dr; the shank moves out from the
-// finger axis by dr, keeping its section; the sides blend between the two.
-// The bore changes by 2*dr and the head keeps its exact shape.
-const smooth = (a, b, x) => {
-  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
-  return t * t * (3 - 2 * t);
-};
-// ri: the bore radius before resizing; metal near the bore always moves
-// radially, so the finger hole stays round.
-export const radialShift = (x, y, dr, ri = 0) => {
-  const r = Math.hypot(x, y);
-  if (r < 1e-9) return [x, y + dr];
-  const phi = Math.abs(Math.atan2(x, y)) * (180 / Math.PI); // 0 at the top
-  const w = (1 - smooth(35, 75, phi)) * smooth(ri + 0.8, ri + 2, r); // 1: rigid lift, 0: radial
-  return [x + (1 - w) * (x / r) * dr, y + w * dr + (1 - w) * (y / r) * dr];
-};
 function resized(got, dr, ri) {
   const geometry = got.geometry.clone();
   const p = geometry.attributes.position.array;
   for (let i = 0; i < p.length; i += 3) [p[i], p[i + 1]] = radialShift(p[i], p[i + 1], dr, ri);
   geometry.attributes.position.needsUpdate = true;
-  geometry.userData.thickness = got.geometry.userData.thickness;
   const info = { ...got.info, resizedBy: +(2 * dr).toFixed(3) };
   if (info.bore) info.bore = +(info.bore + 2 * dr).toFixed(3);
   if (info.boreMin) info.boreMin = +(info.boreMin + 2 * dr).toFixed(3);
-  return { geometry, info };
+  // walls change where the sides are stretched: measure them again
+  return { ...withWall(geometry, info), base: got, shift: { dr, ri } };
 }
 
 // Attach per-vertex wall thickness (for the heatmap) and the thinnest spot.

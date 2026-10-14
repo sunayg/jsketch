@@ -26,6 +26,7 @@ const TOOLS = [
   { name: "compare_designs", description: "Check whether two designs build the same piece; lists differences and a script diff.", inputSchema: { type: "object", properties: { a: design, b: design }, required: ["a", "b"] }, annotations: { readOnlyHint: true } },
   { name: "edit_design", description: "Apply a plain-English change (size, metal, cut, carats, prongs, halo, side stones, pavé, band size) with the built-in rule-based editor; returns the new text and what changed.", inputSchema: { type: "object", properties: { design, request: { type: "string" } }, required: ["design", "request"] }, annotations: { readOnlyHint: true } },
   { name: "import_mesh", description: "Copy a local .stl, .obj or .glb sculpt or scan into the assets folder. Returns its id and a ready `sculpt` line (fit=ring orients and sizes it to the ring; repair=auto rebuilds it as a solid if it is broken).", inputSchema: { type: "object", properties: { path: { type: "string", description: "Path to the mesh file" } }, required: ["path"] }, annotations: { readOnlyHint: false, destructiveHint: false } },
+  { name: "open_bundle", description: "Open a JewelScript bundle (.zip from export_design format=bundle): copies its sculpt meshes into the assets folder and returns design.jws, ready to measure, render, edit or export.", inputSchema: { type: "object", properties: { path: { type: "string", description: "Path to the bundle .zip" } }, required: ["path"] }, annotations: { readOnlyHint: false, destructiveHint: false } },
   { name: "export_design", description: `Export to a file under ${OUT}: stl (metal), stl-stones, 3mf, glb, obj, bundle (script + meshes) or sizerun (zip of STLs, needs sizes like "US5-8:0.5").`, inputSchema: { type: "object", properties: { design, format: { type: "string", enum: ["stl", "stl-stones", "3mf", "glb", "obj", "bundle", "sizerun"] }, filename: { type: "string" }, quality: { type: "string", enum: ["draft", "standard", "fine"] }, part: { type: "string" }, sizes: { type: "string" } }, required: ["design", "format"] }, annotations: { readOnlyHint: false, destructiveHint: false } },
 ];
 
@@ -51,6 +52,7 @@ async function call(name, a = {}) {
       case "compare_designs": return { content: [text(await T.compare(a.a, a.b))] };
       case "edit_design": return { content: [text(await T.edit(a.design, a.request || ""))] };
       case "import_mesh": return { content: [text(await T.importMesh(a.path))] };
+      case "open_bundle": return { content: [text(await T.openBundle(a.path))] };
       case "export_design": {
         const { bytes, ext } = await T.exportBytes(a.design, a.format, a);
         mkdirSync(OUT, { recursive: true });

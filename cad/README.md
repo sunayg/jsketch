@@ -36,7 +36,7 @@ npm test             # all tests
 
 **Solid kernel and sculpts**
 - Metal is one exact solid: every part is unioned and every stone's seat cut with Manifold (WASM, in a background worker), so weights are exact, floating pieces are found exactly, and whole-piece exports are a single watertight shell.
-- Sculpts: import an AI-generated mesh or a scan (STL, OBJ, GLB) as part of the design. "Fit to ring" finds the finger hole at any angle and in any units (ignoring stray debris), sizes the finished bore exactly to the ring size and turns the head up; a head modelled as a separate shell overlapping the band is joined to it. Broken meshes are rebuilt as solids: a voxel remesh that closes holes, follows the original triangles closely near the surface (exact distances rather than a voxel staircase), and can smooth, hollow to a set wall, symmetrize and drop loose debris. Meshes are stored in the browser (IndexedDB) or an assets folder (CLI/MCP).
+- Sculpts: import an AI-generated mesh or a scan (STL, OBJ, GLB) as part of the design. "Fit to ring" finds the finger hole at any angle and in any units (ignoring stray debris), sizes the finished bore exactly to the ring size and turns the head up; a head modelled as a separate shell overlapping the band is joined to it. Broken meshes are rebuilt as solids: a voxel remesh that closes holes, follows the original triangles closely near the surface (exact distances rather than a voxel staircase), and can smooth, hollow to a set wall, symmetrize and drop loose debris. A sculpt remembers the size it was made for (`at=`); at any other size, in the editor or a size run, it is resized as a jeweller would: the head lifts unchanged, the shank opens or closes, the bore stays round, and pavé on it moves with the metal. Meshes are stored in the browser (IndexedDB) or an assets folder (CLI/MCP).
 - Pavé on sculpts: the Surface tool paints onto a sculpt; stones follow the surface, never hang over an edge, get beads and seats, and auto-size. Sculpt walls are measured at every vertex (heatmap and minimum-wall check).
 
 **Editor**
@@ -49,13 +49,13 @@ npm test             # all tests
 
 **Output**
 - Tech sheet: top/front/side/perspective views with dimension lines, gem map, metal table with house density, stone list in ct/mg/pts, units g/dwt/ozt/tola and mm/cm/in, logo, notes; preview, download as one HTML file, or print.
-- Export: STL (metal, stones, or one object), 3MF (millimetres, metal and stones as objects), GLB (in metres, as glTF expects), OBJ, a portable bundle (script, meshes and the sculpt files it uses), and size runs (one STL per finger size; a fitted sculpt is sized as a jeweller would, its head lifted unchanged and its shank opened or closed, with pavé painted on it moving along). Draft/standard/fine quality and casting shrinkage %. The editor, CLI and MCP server share one export path: sculpts included, whole-piece metal from the exact solid.
+- Export: STL (metal, stones, or one object), 3MF (millimetres, metal and stones as objects), GLB (in metres, as glTF expects), OBJ, a portable bundle (script, meshes and the sculpt files it uses), and size runs (one STL per finger size, each checked; a run with a failing size is refused). Draft/standard/fine quality and casting shrinkage %. The editor, CLI and MCP server share one export path: sculpts included, whole-piece metal from the exact solid.
 
 ## For AI agents
 
 **MCP server** (stdio): `claude mcp add jewelscript -- node /path/to/cad/mcp.js`
 
-Tools: `read_docs`, `browse_catalog`, `search_examples`, `get_example`, `validate_design`, `measure_design`, `check_stone_fit`, `render_design` (PNG images from a built-in software renderer), `compare_designs`, `edit_design` (keeps the caller's comments), `import_mesh` (copies a sculpt into `$JEWELSCRIPT_ASSETS`), `export_design` (STL, 3MF, GLB, OBJ, bundle, size run; writes only under `$JEWELSCRIPT_OUT`).
+Tools: `read_docs`, `browse_catalog`, `search_examples`, `get_example`, `validate_design`, `measure_design`, `check_stone_fit`, `render_design` (PNG images from a built-in software renderer), `compare_designs`, `edit_design` (keeps the caller's comments), `import_mesh` (copies a sculpt into `$JEWELSCRIPT_ASSETS`), `open_bundle` (unpacks a bundle's meshes there and returns its script), `export_design` (STL, 3MF, GLB, OBJ, bundle, size run; writes only under `$JEWELSCRIPT_OUT`).
 
 **CLI**: `node cad/cli.js <validate|check|measure|render|export> <file.jws|-> [options]`. Output is JSON. Exit codes: 0 ok, 1 script errors, 2 usage or file problem, 3 checks failed.
 

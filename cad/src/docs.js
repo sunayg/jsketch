@@ -22,7 +22,7 @@ stroke id=row pts=8:0,20:0 dia=1.3 gap=0.15 setting=bead mirror=yes
 region id=z pts=8:-1,20:-1,20:1,8:1 dia=auto min=0.9 max=1.5 setting=bead mirror=yes
       a closed outline filled with a hex lattice; dia=auto picks the stocked
       melee size that covers the most area
-sculpt id=ring src=ring.stl fit=ring repair=auto
+sculpt id=ring src=ring.stl fit=ring at=US7 repair=auto
       an imported mesh (AI sculpt or scan) as part of the design. src: an
       asset id or a .stl/.obj/.glb file name (no folders outside the script's
       or the assets folder). fit=ring finds the finger hole at any angle and
@@ -32,7 +32,11 @@ sculpt id=ring src=ring.stl fit=ring repair=auto
       broken one (voxel=0.15 mm, closing holes and smoothing once unless
       close= / smooth= say otherwise); repair=voxel always rebuilds; keep=
       largest drops debris; hollow=0.8 leaves a 0.8 mm wall; symmetrize=x+|x-;
-      scale/x/y/z/rx/ry/rz place it by hand. Use shank profile=none when the
+      scale/x/y/z/rx/ry/rz place it by hand (scale= not with fit=ring).
+      at= is the size the sculpt was made for (set on import). At any other
+      ring size it is resized as a jeweller would: the head lifts unchanged,
+      the shank opens or closes, the bore stays round, and surfpave stones
+      move with the metal. Size runs work the same way and check each size. Use shank profile=none when the
       sculpt is the whole ring (accents, strokes, regions and brushed pavé
       need a band; use surfpave on the sculpt instead).
 surfpave id=p on=ring pts=x:y:z,… r=1.5 dia=auto setting=bead mirror=yes

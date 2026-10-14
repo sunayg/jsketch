@@ -66,8 +66,7 @@ test("size runs open or close only the bore of a fitted sculpt", async () => {
   for (const size of ["US5", "US13"]) {
     const ds = structuredClone(d);
     ds.ring.size = size;
-    const dr = (parseSize(size).innerDiameter - baseInner) / 2;
-    ds.surfpaves[0].pts = ds.surfpaves[0].pts.map(([x, y, z]) => [x, y + dr, z]); // at the top: lifted
+    // pavé points stay as painted: they are in the sculpt's own coordinates
     counts.push((await compileDesign(ds, { loadAsset, baseInner })).stones.length);
   }
   assert.equal(counts[0], counts[1], `same pavé at both sizes: ${counts}`);

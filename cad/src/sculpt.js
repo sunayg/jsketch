@@ -100,6 +100,22 @@ const unit = (a) => {
   return a.map((v) => v / l);
 };
 
+// Points on the surface: the corners, edge midpoints and centres of the
+// triangles (up to about `max`), so a low-poly mesh still has points all the
+// way round its bore.
+function surfaceSamples(pos, max) {
+  const T = pos.length / 9;
+  const step = Math.max(1, Math.ceil((T * 7) / max));
+  const P = [];
+  for (let t = 0; t < T; t += step) {
+    const o = t * 9;
+    const v = [0, 1, 2].map((k) => [pos[o + k * 3], pos[o + k * 3 + 1], pos[o + k * 3 + 2]]);
+    const mid = (a, b) => a.map((x, k) => (x + b[k]) / 2);
+    P.push(...v, mid(v[0], v[1]), mid(v[1], v[2]), mid(v[2], v[0]), v[0].map((x, k) => (x + v[1][k] + v[2][k]) / 3));
+  }
+  return P;
+}
+
 // The bore seen down an axis: points in 2D (already centred near the hole).
 // Each of B angular sectors gives its innermost point; a circle through those
 // (dropping sectors something pokes into) gives the centre, and the median
@@ -160,9 +176,7 @@ const median = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
 // file's own axes. Works in any units, and ignores debris away from the ring.
 export function fitRing(pos, innerDiameter) {
   if (pos.length / 9 < 20) throw new Error("Too few triangles to find a finger hole");
-  const stride = Math.max(1, Math.floor(pos.length / 3 / 60000)) * 3;
-  const P = [];
-  for (let i = 0; i < pos.length; i += stride) P.push([pos[i], pos[i + 1], pos[i + 2]]);
+  const P = surfaceSamples(pos, 60000);
   // work in units of the shape's size so the numbers are the same in um or m
   const b = bounds(pos);
   const unitLen = Math.hypot(...b.size) || 1;
@@ -234,9 +248,9 @@ export function fitRing(pos, innerDiameter) {
 // in): re-measure it on the finished solid and move/scale it onto the ring.
 function refineBore(man, innerDiameter) {
   const mesh = man.getMesh();
-  const pts = [];
-  const vp = mesh.vertProperties;
-  for (let i = 0; i < vp.length; i += mesh.numProp) pts.push([vp[i], vp[i + 1]]);
+  const soup = new Float32Array(mesh.triVerts.length * 3);
+  for (let i = 0; i < mesh.triVerts.length; i++) for (let k = 0; k < 3; k++) soup[i * 3 + k] = mesh.vertProperties[mesh.triVerts[i] * mesh.numProp + k];
+  const pts = surfaceSamples(soup, 200000).map((p) => [p[0], p[1]]);
   const f = boreFit(pts, [0, 0]);
   if (!f) return { man, bore: null };
   const k = innerDiameter / 2 / f.r;
@@ -476,8 +490,9 @@ export function voxelRemesh(pos, { voxel = 0.15, close = 0, smooth = 1, hollow =
       phi = next;
     }
   }
-  // 7. hollow: keep a shell `hollow` mm thick under the surface
-  if (hollow > 0) for (let i = 0; i < N; i++) phi[i] = Math.min(phi[i], hollow - phi[i]);
+  // 7. hollow: keep a shell at least `hollow` mm thick under the surface
+  // (half a voxel extra, since the voxel grid varies a wall by about that)
+  if (hollow > 0) for (let i = 0; i < N; i++) phi[i] = Math.min(phi[i], hollow + h / 2 - phi[i]);
 
   const sdf = ([x, y, z]) => {
     const fx = (x - origin[0]) / h, fy = (y - origin[1]) / h, fz = (z - origin[2]) / h;

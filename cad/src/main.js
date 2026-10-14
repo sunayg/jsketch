@@ -14,7 +14,7 @@ import { parseSize, sizeFromDiameter } from "./sizes.js";
 import { sculptKey } from "./build.js";
 import { putAsset } from "./assets-idb.js";
 import { assetId, readMesh } from "./meshio.js";
-import { innerDiameterOf } from "./sculpts.js";
+import { innerDiameterOf, sculptBaseInner, radialUnshift } from "./sculpts.js";
 import { smoothNormals } from "./geom.js";
 
 const $ = (id) => document.getElementById(id);
@@ -120,7 +120,7 @@ function pumpExact() {
 // Sculpts are prepared (repaired, fitted) in the worker once per file and
 // options; until then the design shows "preparing…".
 const sculptCache = new Map(); // full key -> { geometry, info } | { pending } | { error }
-const sculptFullKey = (d, sc) => `${sculptKey(sc)}|${sc.fit === "ring" ? innerDiameterOf(d).toFixed(4) : ""}`;
+const sculptFullKey = (d, sc) => `${sculptKey(sc)}|${sculptBaseInner(d, sc).toFixed(4)}|${innerDiameterOf(d).toFixed(4)}`;
 let sculptSeq = 0;
 const sculptJobs = new Map();
 function sculptsFor(d) {
@@ -147,11 +147,16 @@ function onSculptReady(msg) {
   if (!key) return;
   if (msg.error) sculptCache.set(key, { error: msg.error });
   else {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(msg.positions, 3));
-    smoothNormals(g);
+    const geo = (positions) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      return smoothNormals(g);
+    };
+    const g = geo(msg.positions);
     g.userData.thickness = msg.thickness;
-    sculptCache.set(key, { geometry: g, info: msg.info });
+    // resized sculpts also carry the sculpt at its own size (surface pavé is
+    // laid out there and moved with the metal)
+    sculptCache.set(key, msg.shift ? { geometry: g, info: msg.info, base: { geometry: geo(msg.basePositions) }, shift: msg.shift } : { geometry: g, info: msg.info });
     say(`Sculpt ready in ${(msg.info.ms / 1000).toFixed(1)} s (${msg.info.method === "voxel" ? "rebuilt as a solid" : "already a solid"}, ${msg.info.triangles} triangles).`);
   }
   rebuild({ record: false });
@@ -275,7 +280,12 @@ const viewer = createViewer($("viewport"), {
       design.surfpaves.push(sp);
       surfaceDrag.id = sp.id;
     }
-    sp.pts.push(...dabs.map((p) => p.map((v) => Math.round(v * 100) / 100)));
+    // stored at the sculpt's own size, so the pavé follows it when resized
+    const sc = design.sculpts.find((x) => x.id === on);
+    const base = sc ? sculptBaseInner(design, sc) : innerDiameterOf(design);
+    const dr = (innerDiameterOf(design) - base) / 2;
+    const back = ([x, y, z]) => (Math.abs(dr) > 1e-6 ? [...radialUnshift(x, y, dr, base / 2), z] : [x, y, z]);
+    sp.pts.push(...dabs.map((p) => back(p).map((v) => Math.round(v * 100) / 100)));
     commit();
   },
   onSurfaceEnd: () => {
@@ -599,7 +609,7 @@ function renderSheet(r) {
   const gd = GEM_WEIGHT[prefs.gem].digits;
   const table = el("table", {},
     el("tr", {}, el("th", { textContent: "Stone" }), el("th", { className: "n", textContent: "mm" }), el("th", { className: "n", textContent: "qty" }), el("th", { className: "n", textContent: GEM_WEIGHT[prefs.gem].label })),
-    ...r.stones.map((s) => el("tr", {}, el("td", { textContent: `${ROLE_LABEL[s.role] || s.role} ${s.cut}` }), el("td", { className: "n", textContent: fx(s.dia, 2) }), el("td", { className: "n", textContent: s.count }), el("td", { className: "n", textContent: fx(gemIn(s.total, prefs.gem), gd) }))),
+    ...r.stones.map((s) => el("tr", {}, el("td", { textContent: `${ROLE_LABEL[s.role] || s.role}${s.obj ? ` ${s.obj}` : ""} · ${s.cut}` }), el("td", { className: "n", textContent: fx(s.dia, 2) }), el("td", { className: "n", textContent: s.count }), el("td", { className: "n", textContent: fx(gemIn(s.total, prefs.gem), gd) }))),
   );
   $("sheet").replaceChildren(
     el("p", { className: "stale-note", textContent: "Stale: the script has errors, so this is the last valid design." }),
@@ -758,19 +768,27 @@ async function addSculpt() {
   const id = await assetId(bytes);
   await putAsset(id, { name: file.name, ext, bytes });
   const num = (elId) => +$(elId).value || 0;
-  const sc = { id: nextId("sculpt"), src: id, fit: $("sc-fit").checked ? "ring" : "none", repair: $("sc-repair").value };
+  // at= records the size it was made for; other sizes resize it like a ring
+  const at = design.ring.diameter !== undefined ? sizeFromDiameter("US", design.ring.diameter) : design.ring.size;
+  const sc = { id: nextId("sculpt"), src: id, fit: $("sc-fit").checked ? "ring" : "none", at, repair: $("sc-repair").value };
   if (ref.metres && sc.fit === "none") sc.scale = 1000; // glTF metres -> mm
   if (num("sc-close")) sc.close = num("sc-close");
   if (num("sc-smooth")) sc.smooth = num("sc-smooth");
   if (num("sc-hollow")) sc.hollow = num("sc-hollow");
   if ($("sc-sym").value !== "none") sc.symmetrize = $("sc-sym").value;
-  design.sculpts.push(sc);
   let dropped = 0;
+  if ($("sc-whole").checked) {
+    // the new sculpt is the whole ring: it replaces any earlier one
+    dropped += design.sculpts.length + design.surfpaves.length;
+    design.sculpts = [];
+    design.surfpaves = [];
+  }
+  design.sculpts.push(sc);
   if ($("sc-whole").checked) {
     // the sculpt is the whole ring: no band, so nothing that sits on one
     setField(design, "shank", "profile", "none");
     setField(design, "stone", "setting", "none");
-    dropped = design.accents.length + design.strokes.length + design.regions.length + (design.paint.length ? 1 : 0) + (design.halo ? 1 : 0);
+    dropped += design.accents.length + design.strokes.length + design.regions.length + (design.paint.length ? 1 : 0) + (design.halo ? 1 : 0);
     design.halo = null;
     design.accents = [];
     design.strokes = [];
@@ -778,7 +796,7 @@ async function addSculpt() {
     design.paint = [];
   }
   commit();
-  say(`Added sculpt ${sc.id}; preparing it (repair and fit can take a few seconds)…${dropped ? ` Removed ${dropped} band object(s) that need a band (Undo brings them back).` : ""}`);
+  say(`Added sculpt ${sc.id}; preparing it (repair and fit can take a few seconds)…${dropped ? ` Removed ${dropped} object(s) the whole-ring sculpt replaces or that need a band (Undo brings them back).` : ""}`);
 }
 
 // A component's lines merged into the script: a halo (or other single

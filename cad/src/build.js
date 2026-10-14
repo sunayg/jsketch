@@ -11,6 +11,7 @@ import { CUTS, MELEE_SIZES, outline, spaceAlong } from "./gems.js";
 import { fixWinding, signedVolume } from "./geom.js";
 import { TriGrid } from "./surface.js";
 import { hitsMetal } from "./clearance.js";
+import { radialShift, shiftFrame } from "./resize.js";
 
 export { fixWinding, signedVolume };
 
@@ -519,11 +520,15 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
     if (onBand.length) errors.push(`${onBand.join(", ")} sit${onBand.length === 1 ? "s" : ""} on the band, but shank profile is none: remove ${onBand.length === 1 ? "it" : "them"} or give the ring a band`);
     if (!d.sculpts.length) errors.push("Nothing goes round the finger: shank profile is none and there is no sculpt");
   }
-  const gridOf = (scId) => {
+  // surface pavé is laid out on the sculpt at its own size (where it was
+  // painted) and then moves with the metal when the ring is resized, so the
+  // same stones come out at every size
+  const surfaceOf = (scId) => {
     const sc = d.sculpts.find((x) => x.id === scId);
     const got = sc && sculpts.get(sculptKey(sc));
     if (!got?.geometry) return null;
-    return (got.grid ||= new TriGrid(got.geometry));
+    const base = got.base || got;
+    return { grid: (base.grid ||= new TriGrid(base.geometry)), shift: got.shift || null };
   };
 
   // centre stone and head (setting=none: a plain band, e.g. an eternity ring)
@@ -656,10 +661,17 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
 
   // pavé brushed onto sculpt surfaces
   for (const sp of d.surfpaves) {
-    const grid = gridOf(sp.on);
-    if (!grid) continue; // the sculpt is still preparing (reported above)
+    const surf = surfaceOf(sp.on);
+    if (!surf) continue; // the sculpt is still preparing (reported above)
+    const { grid, shift } = surf;
+    const boreR = shift ? shift.ri : ri;
+    const toWorld = (st) => {
+      if (!shift) return st;
+      const f = shiftFrame(st.pos, st.normal, shift);
+      return { ...st, pos: new THREE.Vector3(...f.pos), normal: new THREE.Vector3(...f.normal) };
+    };
     for (const [dabs, id] of sp.mirror === "yes" ? [[sp.pts, sp.id], [sp.pts.map(([x, y, z]) => [-x, y, z]), `${sp.id}~mirror`]] : [[sp.pts, sp.id]]) {
-      const fill = (dd) => surfaceFill(grid, dabs, sp.r, dd, sp.gap, id, stones, colliders, ri);
+      const fill = (dd) => surfaceFill(grid, dabs, sp.r, dd, sp.gap, id, stones, colliders, boreR);
       let row;
       if (sp.dia === "auto") {
         const best = autoFill(sp.min ?? 0.9, sp.max ?? 2, fill);
@@ -669,9 +681,14 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
         row = fill(sp.dia);
         if (!row.length) warnings.push(`surfpave ${id}: no ${sp.dia} mm stones fit where you painted`);
       }
-      stones.push(...row);
+      stones.push(...row.map(toWorld));
       if (sp.setting === "bead" && row.length) {
         const g = merged(surfaceBeads(grid, row, sp.bead));
+        if (g && shift) {
+          const p = g.attributes.position.array;
+          for (let i = 0; i < p.length; i += 3) [p[i], p[i + 1]] = radialShift(p[i], p[i + 1], shift.dr, shift.ri);
+          g.attributes.position.needsUpdate = true;
+        }
         if (g) metal.push({ name: `beads ${id}`, obj: id, geometry: g, bead: true });
       }
     }

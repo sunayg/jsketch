@@ -12,6 +12,7 @@ import { renderPng } from "./render.js";
 import { initKernel } from "../src/kernel.js";
 import { readMesh, assetId } from "../src/meshio.js";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
+import { inflateRawSync } from "node:zlib";
 import { resolve, join, extname, isAbsolute } from "node:path";
 
 // Mesh files for sculpts: by asset id in the assets folder, or by file name
@@ -53,6 +54,56 @@ export async function importMesh(path) {
   await mkdir(ASSETS, { recursive: true });
   await writeFile(join(ASSETS, `${id}.${ext}`), bytes);
   return { id, triangles: soup.length / 9, line: `sculpt id=sculpt1 src=${id} fit=ring repair=auto` };
+}
+
+// The files in a zip (stored or deflated entries).
+export function readZip(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let end = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) {
+    end = i;
+    break;
+  }
+  if (end < 0) throw new Error("not a zip file");
+  const count = dv.getUint16(end + 10, true);
+  let p = dv.getUint32(end + 16, true);
+  const out = {};
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error("damaged zip directory");
+    const method = dv.getUint16(p + 10, true), size = dv.getUint32(p + 20, true);
+    const nameLen = dv.getUint16(p + 28, true), extraLen = dv.getUint16(p + 30, true), commentLen = dv.getUint16(p + 32, true);
+    const local = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + nameLen));
+    const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+    const raw = bytes.subarray(start, start + size);
+    if (method === 0) out[name] = raw;
+    else if (method === 8) out[name] = new Uint8Array(inflateRawSync(raw));
+    else throw new Error(`${name}: unsupported zip compression`);
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+// Open a bundle: its meshes go into the assets folder; returns the script.
+export async function openBundle(path) {
+  if (typeof path !== "string" || !path.trim()) throw new Error("path must be the path of a bundle .zip (a string)");
+  const bytes = await readFile(path).then((b) => new Uint8Array(b), (e) => {
+    throw new Error(e.code === "ENOENT" ? `no file at ${path}` : `cannot read ${path}: ${e.code || e.message}`);
+  });
+  const files = readZip(bytes);
+  if (!files["design.jws"]) throw new Error("this zip has no design.jws; is it a JewelScript bundle?");
+  const design = new TextDecoder().decode(files["design.jws"]);
+  const { design: d } = parse(design);
+  const copied = [];
+  await mkdir(ASSETS, { recursive: true });
+  for (const sc of d.sculpts) {
+    const name = Object.keys(files).find((n) => n === sc.src || n.startsWith(`${sc.src}.`));
+    if (!name || name.includes("/") || name.includes("\\") || name.startsWith(".")) continue;
+    await writeFile(join(ASSETS, name), files[name]);
+    copied.push(name);
+  }
+  const missing = d.sculpts.filter((sc) => !copied.some((n) => n === sc.src || n.startsWith(`${sc.src}.`))).map((sc) => sc.src);
+  return { design, meshesCopied: copied, ...(missing.length ? { missing } : {}) };
 }
 
 // Round floats so JSON stays readable (20.9196 rather than 20.919600000000003).
