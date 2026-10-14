@@ -10,6 +10,7 @@ import { parseSize } from "./sizes.js";
 import { CUTS, MELEE_SIZES, outline, spaceAlong } from "./gems.js";
 import { fixWinding, signedVolume } from "./geom.js";
 import { TriGrid } from "./surface.js";
+import { hitsMetal } from "./clearance.js";
 
 export { fixWinding, signedVolume };
 
@@ -23,8 +24,24 @@ const QUALITY = { draft: 64, standard: 160, fine: 320 };
 export const EDGE = 0.25;
 
 // World transform of a stone: girdle centre at pos, table facing along normal.
-export const stoneMatrix = (s) =>
-  new THREE.Matrix4().compose(s.pos, new THREE.Quaternion().setFromUnitVectors(UP, s.normal), new THREE.Vector3(1, 1, 1));
+// `turn` (degrees) spins the stone about its own axis (e.g. to aim a pear).
+export const stoneMatrix = (s) => {
+  const q = new THREE.Quaternion().setFromUnitVectors(UP, s.normal);
+  if (s.turn) q.multiply(new THREE.Quaternion().setFromAxisAngle(UP, (s.turn * Math.PI) / 180));
+  return new THREE.Matrix4().compose(s.pos, q, new THREE.Vector3(1, 1, 1));
+};
+
+// Split long profile edges so the band has vertices across its faces (the
+// wall-thickness heatmap colours per vertex).
+function subdivide(pts, step = 0.25) {
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const [a, b] = [pts[i - 1], pts[i]];
+    const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step));
+    for (let k = 1; k <= n; k++) out.push([a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n]);
+  }
+  return out;
+}
 
 // Cross-section of the shank in (radius, axial) coordinates.
 function shankProfile(ri, ro, w, kind) {
@@ -141,6 +158,8 @@ const prongReach = (dia) => prongRadius(dia) * 1.7;
 // girdle sits at girdleY, with metal starting at baseY. parts.colliders holds
 // simple shapes (capsules) of the prongs, used by the stone-clearance check.
 function headParts({ cut, dia, setting, prongs = 4, tip = "round", baseY, girdleY, minWall }) {
+  // an outline-shaped block of metal, for the stone-clearance check
+  const prism = (off, y0, y1) => parts.colliders.push({ type: "prism", poly: outline(cut, dia, off, 32), y0, y1 });
   const parts = [];
   parts.colliders = [];
   const pav = 0.43 * dia;
@@ -178,6 +197,7 @@ function headParts({ cut, dia, setting, prongs = 4, tip = "round", baseY, girdle
     const hasSeat = seatTop - baseY >= 0.3;
     const bottom = hasSeat ? seatTop - 0.1 : baseY;
     parts.push({ name: "bezel", geometry: collar(cut, dia, wall, girdleY + 0.3 - bottom, girdleY + 0.3), thickness: wall });
+    prism(wall, baseY, girdleY + 0.3);
     if (hasSeat) {
       // a column down into the band, capped by a plate under the culet that
       // reaches out under the collar so the bezel is one piece with the band
@@ -190,8 +210,10 @@ function headParts({ cut, dia, setting, prongs = 4, tip = "round", baseY, girdle
   } else if (setting === "illusion") {
     // a wide plate around the girdle makes the stone read larger
     const plateT = Math.max(0.8, minWall);
-    parts.push({ name: "illusion-plate", geometry: collar(cut, dia, Math.max(0.8, dia * 0.22), plateT, girdleY - 0.05), thickness: plateT });
-    prongSet(4, 0.4);
+    const reach = Math.max(0.8, dia * 0.22);
+    parts.push({ name: "illusion-plate", geometry: collar(cut, dia, reach, plateT, girdleY - 0.05), thickness: plateT });
+    prism(reach, girdleY - 0.05 - plateT, girdleY + 0.3);
+    prongSet(prongs, 0.4);
   }
   return parts;
 }
@@ -199,7 +221,7 @@ function headParts({ cut, dia, setting, prongs = 4, tip = "round", baseY, girdle
 // ---- band fills ----
 
 // Hex lattice over the band; `inside(s, w)` decides membership.
-function hexFill(d, geom, dia, gap, inside, role, occupied = []) {
+function hexFill(d, geom, dia, gap, inside, role, occupied = [], colliders = []) {
   if (d.shank.profile === "none") return [];
   const { width, circumference } = geom;
   const pitch = dia + gap;
@@ -221,6 +243,7 @@ function hexFill(d, geom, dia, gap, inside, role, occupied = []) {
       if (pos.distanceTo(head) < headR) continue; // keep clear of the head
       // keep clear of stones already placed (accents, strokes, earlier fills)
       if (occupied.some((o) => o.role !== "centre" && o.pos.distanceTo(pos) < (o.dia * CUTS[o.cut].aspect + dia) / 2 + gap)) continue;
+      if (hitsMetal(pos, dia / 2 + gap, colliders, role)) continue; // clear of other settings' metal
       out.push({ cut: "round", dia, role, pos, normal, s, w });
     }
   }
@@ -293,7 +316,7 @@ function alongPath(pts, n) {
   return { L, at, pointsAt: (count, spacing) => Array.from({ length: count }, (_, i) => at((L - (count - 1) * spacing) / 2 + i * spacing)) };
 }
 
-function buildStroke(d, geom, o, pts, id, metal, stones, warnings) {
+function buildStroke(d, geom, o, pts, id, metal, stones, warnings, colliders = []) {
   if (d.shank.profile === "none") return;
   const path = alongPath(pts, 0);
   let dia = o.dia;
@@ -302,17 +325,31 @@ function buildStroke(d, geom, o, pts, id, metal, stones, warnings) {
     count = o.count;
     dia = path.L / count - o.gap;
     if (dia < 0.8 || dia > 3) {
-      warnings.push(`stroke ${id}: ${count} stones on ${path.L.toFixed(1)} mm gives ${dia.toFixed(2)} mm stones (allowed 0.8-3)`);
-      dia = Math.min(3, Math.max(0.8, dia));
+      // the count can't be met with stones in 0.8-3 mm: fit as many as will go
+      const fixed = Math.min(3, Math.max(0.8, dia));
+      const fits = Math.max(1, Math.floor((path.L + o.gap) / (fixed + o.gap)));
+      warnings.push(`stroke ${id}: ${count} stones don't fit on ${path.L.toFixed(1)} mm (they would be ${dia.toFixed(2)} mm); placed ${fits} of ${fixed} mm`);
+      count = fits;
+      dia = fixed;
     }
   } else {
     count = Math.max(1, Math.floor((path.L + o.gap) / (dia + o.gap)));
   }
   const spacing = count > 1 ? Math.min(dia + o.gap, path.L / (count - 1)) : 0;
-  const row = path.pointsAt(count, o.count ? path.L / count : spacing).map(([s, w]) => {
+  const pitch = o.count && path.L / count >= dia + o.gap - 1e-9 ? path.L / count : Math.max(spacing, dia + o.gap);
+  const head = new THREE.Vector3(0, geom.ro, 0);
+  const headR = d.stone.setting === "none" ? 0 : d.stone.dia * 0.3 + dia / 2 + 0.3;
+  let skipped = 0;
+  const row = path.pointsAt(count, pitch).map(([s, w]) => {
     const { pos, normal } = surfaceAt(d, geom, s, w, -0.05);
     return { cut: "round", dia, role: "stroke", obj: id, pos, normal, s, w };
+  }).filter((st) => {
+    // keep clear of the head and of stones already placed, as fills do
+    const blocked = st.pos.distanceTo(head) < headR || hitsMetal(st.pos, dia / 2 + o.gap, colliders, id) || stones.some((o2) => o2.role !== "centre" && o2.pos.distanceTo(st.pos) < (o2.dia * CUTS[o2.cut].aspect + dia) / 2 + o.gap);
+    if (blocked) skipped++;
+    return !blocked;
   });
+  if (skipped) warnings.push(`stroke ${id}: ${skipped} stone(s) left out where the path runs into the head or other stones`);
   stones.push(...row);
   if (o.setting === "bead") {
     const g = merged(beadsFor(d, geom, row, o.bead));
@@ -341,7 +378,7 @@ function buildStroke(d, geom, o, pts, id, metal, stones, warnings) {
 // ---- pavé on sculpt surfaces ----
 
 // Pack round stones of `dia` over the part of the surface within r of any dab.
-function surfaceFill(grid, dabs, r, dia, gap, id, occupied) {
+function surfaceFill(grid, dabs, r, dia, gap, id, occupied, colliders = []) {
   const pitch = dia + gap;
   const tri = new THREE.Triangle();
   const centres = dabs.map(([x, y, z]) => new THREE.Vector3(x, y, z));
@@ -403,6 +440,7 @@ function surfaceFill(grid, dabs, r, dia, gap, id, occupied) {
     if (!onSurface) continue;
     const pos = q.clone().addScaledVector(n, -0.05);
     if (occupied.some((o) => o.pos.distanceTo(pos) < (o.dia * CUTS[o.cut].aspect + dia) / 2 + gap)) continue;
+    if (hitsMetal(pos, dia / 2 + gap, colliders, id)) continue;
     // metal left under the culet: through the sculpt to its far side
     const through = grid.raycast(q.clone().addScaledVector(n, -0.01), n.clone().negate(), 10, 0.02, true);
     placed.push({ cut: "round", dia, role: "surface", obj: id, pos, normal: n, metalBelow: through === null ? null : through - 0.43 * dia - 0.05 });
@@ -449,7 +487,7 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
   // (profile=none: no band, for example when a sculpt is the whole ring)
   const hasBand = d.shank.profile !== "none";
   if (hasBand) {
-    const lathe = new THREE.LatheGeometry(shankProfile(ri, ro, w, d.shank.profile).map(([r, y]) => new THREE.Vector2(r, y)), seg);
+    const lathe = new THREE.LatheGeometry(subdivide(shankProfile(ri, ro, w, d.shank.profile)).map(([r, y]) => new THREE.Vector2(r, y)), seg);
     lathe.rotateX(Math.PI / 2);
     metal.push({ name: "shank", obj: "shank", geometry: fixWinding(lathe) });
   }
@@ -482,7 +520,7 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
     stones.push({ cut: d.stone.cut, dia, role: "centre", obj: "stone", pos: new THREE.Vector3(0, girdleY, 0), normal: UP.clone() });
     const head = headParts({ ...d.stone, baseY: ro - 0.3, girdleY, minWall });
     for (const p of head) metal.push({ ...p, obj: "stone", geometry: fixWinding(p.geometry) });
-    for (const c of head.colliders) colliders.push({ ...c, obj: "stone" });
+    for (const c of head.colliders) colliders.push({ ...c, frame: new THREE.Matrix4(), obj: "stone" });
   } else if (d.halo) warnings.push("halo needs a centre stone; it is ignored while stone setting=none");
 
   // halo follows the cut's girdle outline
@@ -514,14 +552,20 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
       return a.clone().addScaledVector(ab, t).distanceTo(p);
     };
     const kept = [];
+    let planned = 0;
     for (const r of rings) {
       for (const [x, z] of spaceAlong(outline(d.stone.cut, dia, r.off), r.hd + gap).pts) {
+        planned++;
         const pos = new THREE.Vector3(x, r.y, z);
         if (colliders.some((c) => segDist(pos, c.a, c.b) < c.r + r.hd / 2 + 0.05)) continue;
         if (kept.every((k) => k.pos.distanceTo(pos) >= (k.dia + r.hd) / 2 + gap * 0.5)) kept.push({ pos, dia: r.hd });
         else continue;
         stones.push({ cut: "round", dia: r.hd, role: r.role, obj: "halo", pos, normal: UP.clone() });
       }
+    }
+    // prongs always pass through a hidden halo's ring, so it may lose more
+    if (kept.length < planned * (kind === "hidden" ? 0.6 : 0.75)) {
+      warnings.push(`halo: ${planned - kept.length} of ${planned} stone positions are blocked by prongs; use fewer prongs or a ${d.halo.kind === "hidden" ? "single" : "smaller"} halo`);
     }
     // a frame under the halo stones only: an outline-following ring, open in
     // the middle so the centre stone's pavilion stays clear
@@ -534,7 +578,9 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
     const px = halfW + (inner.off + outer.off) / 2;
     for (const sx of [-1, 1]) {
       const footY = Math.sqrt(Math.max(0, ro * ro - px * px)) - 0.3;
-      const post = rod(new THREE.Vector3(sx * px, top - plateT / 2, 0), new THREE.Vector3(sx * px, footY, 0), 0.45);
+      const [pa, pb] = [new THREE.Vector3(sx * px, top - plateT / 2, 0), new THREE.Vector3(sx * px, footY, 0)];
+      const post = rod(pa, pb, 0.45);
+      colliders.push({ a: pa, b: pb, r: 0.45, obj: "halo" });
       metal.push({ name: `halo-post${sx > 0 ? 2 : 1}`, obj: "halo", geometry: fixWinding(post), thickness: 0.9 });
     }
   }
@@ -543,32 +589,38 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
   for (const a of d.accents) {
     for (const [s, id] of a.mirror === "yes" ? [[a.s, a.id], [-a.s, `${a.id}~mirror`]] : [[a.s, a.id]]) {
       const { pos, normal } = surfaceAt(d, geom, s, a.w);
-      const frame = new THREE.Matrix4().compose(pos, new THREE.Quaternion().setFromUnitVectors(UP, normal), new THREE.Vector3(1, 1, 1));
+      const turn = (a.turn || 0) * (id.endsWith("~mirror") ? -1 : 1);
+      const q = new THREE.Quaternion().setFromUnitVectors(UP, normal).multiply(new THREE.Quaternion().setFromAxisAngle(UP, (turn * Math.PI) / 180));
+      const frame = new THREE.Matrix4().compose(pos, q, new THREE.Vector3(1, 1, 1));
       const flush = a.setting === "flush";
       const localGirdle = flush ? -0.05 : 0.43 * a.dia * 0.5 + 0.15;
       stones.push({
-        cut: a.cut, dia: a.dia, role: "accent", obj: a.id, s, w: a.w, flush,
+        cut: a.cut, dia: a.dia, role: "accent", obj: a.id, s, w: a.w, flush, turn,
+        // how far the culet reaches below the band surface (into the metal)
+        culetDepth: 0.43 * a.dia - localGirdle,
         pos: new THREE.Vector3(0, localGirdle, 0).applyMatrix4(frame), normal,
       });
       if (!flush) {
         const head = headParts({ cut: a.cut, dia: a.dia, setting: a.setting, prongs: a.prongs ?? 4, tip: a.tip, baseY: -0.3, girdleY: localGirdle, minWall });
         for (const p of head) metal.push({ ...p, name: `${id} ${p.name}`, obj: a.id, geometry: fixWinding(p.geometry.applyMatrix4(frame)) });
-        for (const c of head.colliders) colliders.push({ a: c.a.clone().applyMatrix4(frame), b: c.b.clone().applyMatrix4(frame), r: c.r, obj: a.id });
+        for (const c of head.colliders) {
+          colliders.push(c.type === "prism" ? { ...c, frame, obj: a.id } : { a: c.a.clone().applyMatrix4(frame), b: c.b.clone().applyMatrix4(frame), r: c.r, obj: a.id });
+        }
       }
     }
   }
 
   // strokes: one row of stones along a drawn path
   for (const st of d.strokes) {
-    buildStroke(d, geom, st, st.pts, st.id, metal, stones, warnings);
-    if (st.mirror === "yes") buildStroke(d, geom, st, mirrorPts(st.pts), `${st.id}~mirror`, metal, stones, warnings);
+    buildStroke(d, geom, st, st.pts, st.id, metal, stones, warnings, colliders);
+    if (st.mirror === "yes") buildStroke(d, geom, st, mirrorPts(st.pts), `${st.id}~mirror`, metal, stones, warnings, colliders);
   }
 
   // regions: closed outlines filled with a hex lattice
   const fillRegion = (rg, pts, id) => {
     const C = geom.circumference;
     const inside = (s, ww) => pointInPoly(s, ww, pts) || pointInPoly(s + C, ww, pts) || pointInPoly(s - C, ww, pts);
-    const fill = (dd) => hexFill(d, geom, dd, rg.gap, inside, "region", stones).map((x) => ({ ...x, obj: id }));
+    const fill = (dd) => hexFill(d, geom, dd, rg.gap, inside, "region", stones, colliders).map((x) => ({ ...x, obj: id }));
     let row;
     if (rg.dia === "auto") {
       const best = autoFill(rg.min ?? 0.9, rg.max ?? 2, fill);
@@ -592,7 +644,7 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
     const grid = gridOf(sp.on);
     if (!grid) continue; // the sculpt is still preparing (reported above)
     for (const [dabs, id] of sp.mirror === "yes" ? [[sp.pts, sp.id], [sp.pts.map(([x, y, z]) => [-x, y, z]), `${sp.id}~mirror`]] : [[sp.pts, sp.id]]) {
-      const fill = (dd) => surfaceFill(grid, dabs, sp.r, dd, sp.gap, id, stones);
+      const fill = (dd) => surfaceFill(grid, dabs, sp.r, dd, sp.gap, id, stones, colliders);
       let row;
       if (sp.dia === "auto") {
         const best = autoFill(sp.min ?? 0.9, sp.max ?? 2, fill);
@@ -615,7 +667,7 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
   if (d.paint.length) {
     const C = geom.circumference;
     const inside = (s, ww) => d.paint.some((p) => Math.hypot(wrapDist(s, p.s, C), ww - p.w) <= p.r);
-    const fill = (dd) => hexFill(d, geom, dd, d.pave.gap, inside, "pave", stones).map((x) => ({ ...x, obj: "pave" }));
+    const fill = (dd) => hexFill(d, geom, dd, d.pave.gap, inside, "pave", stones, colliders).map((x) => ({ ...x, obj: "pave" }));
     let row;
     if (d.pave.dia === "auto") {
       const best = autoFill(d.pave.min ?? 0.9, d.pave.max ?? 2, fill);

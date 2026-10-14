@@ -52,7 +52,7 @@ export const SCHEMA = {
   pave: { dia: ["numauto", 0.8, 3], gap: ["num", 0, 1], min: ["num", 0.8, 3], max: ["num", 0.8, 3], bead: ["num", 0, 0.8] },
   accent: {
     id: ["id"], cut: [Object.keys(CUTS)], dia: ["num", 1, 8], s: ["num", -200, 200], w: ["num", -10, 10],
-    setting: [["bezel", "prong", "flush"]], prongs: ["int", 3, 6], tip: [TIPS], mirror: [YESNO],
+    setting: [["bezel", "prong", "flush"]], prongs: ["int", 3, 6], tip: [TIPS], mirror: [YESNO], turn: ["num", -360, 360],
   },
   stroke: {
     id: ["id"], pts: ["pts"], dia: ["num", 0.8, 3], count: ["int", 1, 300], gap: ["num", 0, 1],
@@ -277,6 +277,7 @@ export function parse(text) {
       } else if (rule[0].includes(val)) obj[key] = val;
       else err(line, `${key} must be one of: ${rule[0].join(", ")}`);
     }
+    if (cmd === "stroke" && given.has("count") && given.has("dia")) err(line, "give count= or dia=, not both (count picks the size)");
     if (cmd === "ring" && given.has("diameter")) {
       if (given.has("size")) err(line, "give either size= or diameter=, not both (diameter wins)");
       else delete obj.size; // a diameter replaces the default size
@@ -373,9 +374,13 @@ export function mergeText(oldText, d) {
     const [, comment] = splitComment(l);
     out.push({ text: sameTokens(l, nl) ? l : comment ? `${nl}  ${comment.trim()}` : nl, idx: index.get(k) });
   }
-  // new lines go after the closest earlier line in canonical order
+  // new lines go after the closest earlier line in canonical order; a
+  // command still at its defaults is not added if the script never had it
+  const dc = {};
+  const defaults = new Map(serialize(defaultDesign()).trimEnd().split("\n").map((l) => [lineKey(l, dc), l]));
   freshKeys.forEach((k, i) => {
     if (used.has(k)) return;
+    if (["pave", "rule"].includes(k) && defaults.get(k) === fresh[i]) return;
     let at = -1;
     for (let j = 0; j < out.length; j++) if (out[j].idx >= 0 && out[j].idx < i) at = j;
     out.splice(at + 1, 0, { text: fresh[i], idx: i });

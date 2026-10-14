@@ -4,6 +4,7 @@ import { METALS } from "./script.js";
 import { CUTS, caratOf, isStockedMelee, outline } from "./gems.js";
 import { signedVolume, openEdges } from "./geom.js";
 import { shankThicknessAt, EDGE } from "./build.js";
+import { hitsMetal } from "./clearance.js";
 
 const FLUSH = new Set(["pave", "region", "stroke", "surface"]);
 
@@ -113,23 +114,19 @@ export function report(model, exact = null) {
   const floating = exact ? [] : model.metal.filter((_, i) => !reached.has(i));
   for (const m of floating) checks.push({ level: "error", text: `${m.name} is not connected to the rest of the metal` });
 
-  // stones that run into prongs of another stone
-  const seg = (p, a, b) => {
-    const ab = b.clone().sub(a);
-    const t = ab.lengthSq() ? Math.max(0, Math.min(1, p.clone().sub(a).dot(ab) / ab.lengthSq())) : 0;
-    return a.clone().addScaledVector(ab, t).distanceTo(p);
-  };
-  let prongHits = 0;
+  // stones that run into the metal of another setting
+  let hits = 0;
   for (const st of model.stones) {
-    const holder = st.role === "centre" ? "stone" : st.obj;
-    if (model.colliders?.some((c) => c.obj !== holder && c.obj.split("~")[0] !== holder && seg(st.pos, c.a, c.b) < c.r + (st.dia / 2) * 0.95)) prongHits++;
+    if (hitsMetal(st.pos, (st.dia / 2) * 0.95, model.colliders || [], st.role === "centre" ? "stone" : st.obj)) hits++;
   }
-  if (prongHits) checks.push({ level: "error", text: `${prongHits} stone(s) run into another stone's prongs` });
+  if (hits) checks.push({ level: "error", text: `${hits} stone(s) run into the metal of another setting (prongs, bezel, posts)` });
 
   // band-set stones: metal under the culet, metal at the edge, and spacing
   const set = model.stones.filter((s) => s.w !== undefined && (FLUSH.has(s.role) || s.flush));
+  const raised = model.stones.filter((s) => s.role === "accent" && !s.flush && s.culetDepth > 0 && s.w !== undefined);
   const under = [
     ...set.map((s) => shankThicknessAt(d, model.geom, s.w) - 0.43 * s.dia - 0.05),
+    ...raised.map((s) => shankThicknessAt(d, model.geom, s.w) - s.culetDepth),
     ...model.stones.filter((s) => s.role === "surface" && s.metalBelow !== null && s.metalBelow !== undefined).map((s) => s.metalBelow),
   ];
   const thinUnder = under.filter((v) => v < 0.3);
