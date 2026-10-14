@@ -33,13 +33,13 @@ export const METALS = {
   bronze: { label: "Bronze", density: 8.8, color: "#b0794a" },
   copper: { label: "Copper", density: 8.96, color: "#c8744d" },
 };
-export const PROFILES = ["flat", "comfort", "domed"];
+export const PROFILES = ["flat", "comfort", "domed", "none"]; // none: no band (e.g. the sculpt is the whole ring)
 export const SETTINGS = ["prong", "bezel", "illusion", "none"]; // none: no centre stone
 export const TIPS = ["round", "pointed", "flat", "claw"];
 export const HALO_KINDS = ["single", "double", "hidden"];
 const YESNO = ["yes", "no"];
 // commands that can appear many times, each with a unique id
-export const LISTS = { accent: "accents", stroke: "strokes", region: "regions" };
+export const LISTS = { accent: "accents", stroke: "strokes", region: "regions", sculpt: "sculpts" };
 
 // command -> { key: [type, min, max] | [enum values] }
 export const SCHEMA = {
@@ -62,6 +62,13 @@ export const SCHEMA = {
     id: ["id"], pts: ["pts"], dia: ["numauto", 0.8, 3], gap: ["num", 0, 1], min: ["num", 0.8, 3], max: ["num", 0.8, 3],
     setting: [["bead", "none"]], bead: ["num", 0.2, 0.8], mirror: [YESNO],
   },
+  sculpt: {
+    id: ["id"], src: ["src"], fit: [["ring", "none"]], scale: ["num", 0.0001, 10000],
+    x: ["num", -100, 100], y: ["num", -100, 100], z: ["num", -100, 100],
+    rx: ["num", -360, 360], ry: ["num", -360, 360], rz: ["num", -360, 360],
+    repair: [["auto", "voxel", "none"]], voxel: ["num", 0.05, 0.5], close: ["int", 0, 10], smooth: ["int", 0, 5],
+    keep: [["largest", "all"]], hollow: ["num", 0, 5], symmetrize: [["none", "x+", "x-"]], simplify: [YESNO],
+  },
   paint: { s: ["num", -200, 200], w: ["num", -10, 10], r: ["num", 0.3, 10] },
   rule: { min_wall: ["num", 0, 3], shrink: ["num", 0, 5] },
 };
@@ -78,6 +85,7 @@ export const defaultDesign = () => ({
   accents: [],
   strokes: [],
   regions: [],
+  sculpts: [],
   pave: { dia: 1.3, gap: 0.15, bead: 0.35 },
   paint: [],
   rule: { min_wall: 0.8, shrink: 0 },
@@ -87,6 +95,7 @@ const LIST_DEFAULTS = {
   accent: () => ({ cut: "round", dia: 2, s: 12, w: 0, setting: "bezel", mirror: "no" }),
   stroke: () => ({ dia: 1.3, gap: 0.15, setting: "bead", bead: 0.35, mirror: "no" }),
   region: () => ({ dia: 1.3, gap: 0.15, setting: "bead", bead: 0.35, mirror: "no" }),
+  sculpt: () => ({ fit: "none", repair: "auto" }),
 };
 
 // "s:w,s:w,…" -> [[s, w], …]
@@ -236,6 +245,10 @@ export function parse(text) {
           ids.add(val);
           obj.id = val;
         }
+      } else if (rule[0] === "src") {
+        // an asset id (16 hex digits) or a mesh file name next to the script
+        if (!/^([0-9a-f]{16}|[\w./-]+\.(stl|obj|glb))$/i.test(val)) (reported = true), err(line, "src must be an asset id or a .stl, .obj or .glb file name");
+        else obj.src = val;
       } else if (rule[0] === "pts") {
         const pts = parsePts(val);
         if (!pts) (reported = true), err(line, "pts must look like s:w,s:w (numbers in mm)");
@@ -255,6 +268,7 @@ export function parse(text) {
     }
     if (isList) {
       if (obj.id === undefined) return reported ? undefined : err(line, `${cmd} needs an id, e.g. ${cmd} id=${cmd}1`);
+      if (cmd === "sculpt" && !obj.src) return reported ? undefined : err(line, "sculpt needs src= (import a mesh first)");
       const need = cmd === "region" ? 3 : cmd === "stroke" ? 2 : 0;
       if (need && (!obj.pts || obj.pts.length < need)) return reported ? undefined : err(line, `${cmd} needs pts with at least ${need} points`);
       d[LISTS[cmd]].push(obj);

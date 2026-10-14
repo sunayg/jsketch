@@ -8,6 +8,40 @@ import { interpret } from "../src/assistant.js";
 import { stlBytes, to3mf, bundle, sizeRun, sizeRange } from "../src/export.js";
 import { renderPng } from "./render.js";
 import { initKernel, solidify, toGeometry } from "../src/kernel.js";
+import { resolveSculpts } from "../src/sculpts.js";
+import { readMesh, assetId } from "../src/meshio.js";
+import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
+import { resolve, join, extname, isAbsolute } from "node:path";
+
+// Mesh files for sculpts: by asset id in the assets folder, or by file name
+// relative to the assets folder (CLI: the script's folder is searched first).
+export const ASSETS = resolve(process.env.JEWELSCRIPT_ASSETS || "jewelscript-assets");
+export async function loadAsset(src, baseDir) {
+  if (/^[0-9a-f]{16}$/.test(src)) {
+    const files = await readdir(ASSETS).catch(() => []);
+    const f = files.find((n) => n.startsWith(src + "."));
+    return f ? { bytes: new Uint8Array(await readFile(join(ASSETS, f))), ext: extname(f).slice(1) } : null;
+  }
+  for (const dir of [baseDir, ASSETS].filter(Boolean)) {
+    const path = isAbsolute(src) ? src : join(dir, src);
+    try {
+      return { bytes: new Uint8Array(await readFile(path)), ext: extname(path).slice(1) };
+    } catch {}
+  }
+  return null;
+}
+
+// Copy a mesh into the assets folder; returns its id and a ready sculpt line.
+export async function importMesh(path) {
+  const ext = extname(path).slice(1).toLowerCase();
+  if (!["stl", "obj", "glb"].includes(ext)) throw new Error("import_mesh takes .stl, .obj or .glb files");
+  const bytes = new Uint8Array(await readFile(path));
+  const soup = readMesh(bytes, ext); // fails early on unreadable files
+  const id = await assetId(bytes);
+  await mkdir(ASSETS, { recursive: true });
+  await writeFile(join(ASSETS, `${id}.${ext}`), bytes);
+  return { id, triangles: soup.length / 9, line: `sculpt id=sculpt1 src=${id} fit=ring repair=auto` };
+}
 
 // Round floats so JSON stays readable (20.9196 rather than 20.919600000000003).
 export const tidy = (v) =>
@@ -21,14 +55,19 @@ export function validate(text) {
 // The solid kernel (Manifold) gives exact volumes and watertight exports.
 export const ready = initKernel();
 
-function compile(text, quality) {
+let baseDir = null;
+export const setBaseDir = (dir) => (baseDir = dir);
+
+async function compile(text, quality) {
+  await ready;
   const { design, errors } = parse(text);
   if (errors.length) {
     const e = new Error("The script has errors");
     e.errors = errors;
     throw e;
   }
-  const model = build(design, { quality });
+  const sculpts = await resolveSculpts(design, (src) => loadAsset(src, baseDir));
+  const model = build(design, { quality, sculpts });
   const exact = solidify(model);
   model.solidGeometry = toGeometry(exact.solid);
   model.exact = exact;
@@ -36,25 +75,25 @@ function compile(text, quality) {
   return { design, model };
 }
 
-export function measure(text) {
-  const { model } = compile(text);
+export async function measure(text) {
+  const { model } = await compile(text);
   return tidy(report(model, model.exact));
 }
 
-export function stoneFit(text) {
-  const r = measure(text);
+export async function stoneFit(text) {
+  const r = await measure(text);
   const relevant = r.checks.filter((c) => /overlap|prong|bore|overhang|holding|culet|edge|touch|fit/.test(c.text));
   return { ok: !relevant.some((c) => c.level === "error"), stoneCount: r.stoneCount, findings: relevant.length ? relevant : [{ level: "ok", text: "All stones clear the metal and each other" }] };
 }
 
-export function render(text, { views = ["iso", "top"], size = 512 } = {}) {
-  const { model } = compile(text, "draft");
+export async function render(text, { views = ["iso", "top"], size = 512 } = {}) {
+  const { model } = await compile(text, "draft");
   return views.map((view) => ({ view, png: renderPng(model, { view, size }) }));
 }
 
 // Two designs build the same piece when weights, sizes and stones agree.
-export function compare(a, b) {
-  const ra = measure(a), rb = measure(b);
+export async function compare(a, b) {
+  const [ra, rb] = [await measure(a), await measure(b)];
   const same = (x, y, tol) => Math.abs(x - y) <= tol * Math.max(1, Math.abs(x));
   const diffs = [];
   if (!same(ra.metal.volumeMm3, rb.metal.volumeMm3, 0.001)) diffs.push(`metal volume ${ra.metal.volumeMm3} vs ${rb.metal.volumeMm3} mm³`);
@@ -67,14 +106,14 @@ export function compare(a, b) {
   return { same: diffs.length === 0, differences: diffs, scriptDiff: lineDiff };
 }
 
-export function edit(text, request) {
-  const { design } = compile(text);
+export async function edit(text, request) {
+  const { design } = await compile(text);
   const r = interpret(request, design);
   return { text: serialize(r.design), changes: r.changes, notUnderstood: r.ignored };
 }
 
-export function exportBytes(text, format, { quality = "standard", part, sizes } = {}) {
-  const { design, model } = compile(text, quality);
+export async function exportBytes(text, format, { quality = "standard", part, sizes } = {}) {
+  const { design, model } = await compile(text, quality);
   switch (format) {
     case "stl": return { bytes: stlBytes(model, "metal", { obj: part }), ext: "stl" };
     case "stl-stones": return { bytes: stlBytes(model, "stones", { obj: part }), ext: "stl" };

@@ -13,6 +13,9 @@ import { fixWinding, signedVolume } from "./geom.js";
 export { fixWinding, signedVolume };
 
 const UP = new THREE.Vector3(0, 1, 0);
+
+// A prepared sculpt depends on its file and every option except its id.
+export const sculptKey = (sc) => JSON.stringify(Object.entries(sc).filter(([k]) => k !== "id" && k !== "exprs").sort());
 const TAU = Math.PI * 2;
 const QUALITY = { draft: 64, standard: 160, fine: 320 };
 // metal left between a band-set stone and the band edge
@@ -44,6 +47,7 @@ const domeHeight = (ri, ro) => Math.min(0.4 * (ro - ri), 0.6);
 
 // Wall thickness of the shank at axial position w (used by checks and the heatmap).
 export function shankThicknessAt(d, geom, w) {
+  if (d.shank.profile === "none") return Infinity;
   const { ri, ro, width } = geom;
   const h = width / 2;
   const t = ro - ri;
@@ -195,6 +199,7 @@ function headParts({ cut, dia, setting, prongs = 4, tip = "round", baseY, girdle
 
 // Hex lattice over the band; `inside(s, w)` decides membership.
 function hexFill(d, geom, dia, gap, inside, role, occupied = []) {
+  if (d.shank.profile === "none") return [];
   const { width, circumference } = geom;
   const pitch = dia + gap;
   const rowH = (pitch * Math.sqrt(3)) / 2;
@@ -288,6 +293,7 @@ function alongPath(pts, n) {
 }
 
 function buildStroke(d, geom, o, pts, id, metal, stones, warnings) {
+  if (d.shank.profile === "none") return;
   const path = alongPath(pts, 0);
   let dia = o.dia;
   let count;
@@ -329,7 +335,9 @@ function buildStroke(d, geom, o, pts, id, metal, stones, warnings) {
   }
 }
 
-export function build(d, { quality = "standard" } = {}) {
+// sculpts: Map id -> { geometry, info } of prepared (repaired) sculpt meshes,
+// or { pending: true } / { error } while loading. See sculpts.js.
+export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
   const size = parseSize(d.ring.size);
   const diameter = d.ring.diameter ?? size.innerDiameter;
   const ri = diameter / 2;
@@ -344,9 +352,26 @@ export function build(d, { quality = "standard" } = {}) {
   const minWall = d.rule.min_wall;
 
   // shank: revolve the profile around Z, then stand the ring up
-  const lathe = new THREE.LatheGeometry(shankProfile(ri, ro, w, d.shank.profile).map(([r, y]) => new THREE.Vector2(r, y)), seg);
-  lathe.rotateX(Math.PI / 2);
-  metal.push({ name: "shank", obj: "shank", geometry: fixWinding(lathe) });
+  // (profile=none: no band, for example when a sculpt is the whole ring)
+  const hasBand = d.shank.profile !== "none";
+  if (hasBand) {
+    const lathe = new THREE.LatheGeometry(shankProfile(ri, ro, w, d.shank.profile).map(([r, y]) => new THREE.Vector2(r, y)), seg);
+    lathe.rotateX(Math.PI / 2);
+    metal.push({ name: "shank", obj: "shank", geometry: fixWinding(lathe) });
+  }
+
+  // sculpts: prepared meshes (already watertight solids) placed as metal
+  const sculptInfo = {};
+  for (const sc of d.sculpts) {
+    const got = sculpts.get(sculptKey(sc));
+    if (!got || got.pending) warnings.push(`sculpt ${sc.id}: preparing…`);
+    else if (got.error) warnings.push(`sculpt ${sc.id}: ${got.error}`);
+    else {
+      metal.push({ name: `sculpt ${sc.id}`, obj: sc.id, geometry: got.geometry, sculpt: true });
+      sculptInfo[sc.id] = got.info;
+    }
+  }
+  if (!hasBand && (d.paint.length || d.strokes.length || d.regions.length)) warnings.push("pavé on the band needs a band: shank profile is none");
 
   // centre stone and head (setting=none: a plain band, e.g. an eternity ring)
   const hasCentre = d.stone.setting !== "none";
@@ -482,5 +507,5 @@ export function build(d, { quality = "standard" } = {}) {
     }
   } else if (d.pave.dia === "auto") paveDia = null;
 
-  return { metal, stones, geom, design: d, paveDia, warnings, colliders };
+  return { metal, stones, geom, design: d, paveDia, warnings, colliders, sculptInfo, hasBand };
 }

@@ -9,7 +9,8 @@
 // Exit codes: 0 ok, 1 script has errors, 2 usage or file problem, 3 checks failed.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { validate, measure, render, exportBytes, ready } from "./node/tools.js";
+import { validate, measure, render, exportBytes, ready, setBaseDir } from "./node/tools.js";
+import { dirname, resolve as resolvePath } from "node:path";
 
 await ready;
 
@@ -34,17 +35,18 @@ try {
 } catch (e) {
   done({ ok: false, error: e.code === "ENOENT" ? `File not found: ${file}` : `Cannot read ${file}: ${e.message}` }, 2);
 }
+if (file !== "-") setBaseDir(dirname(resolvePath(file)));
 const v = validate(text);
 if (!v.ok) done({ ok: false, errors: v.errors }, 1);
 
 try {
   if (cmd === "validate") done({ ok: true }, 0);
   if (cmd === "check") {
-    const r = measure(text);
+    const r = await measure(text);
     done({ ok: r.ok, checks: r.checks }, r.ok ? 0 : 3);
   }
   if (cmd === "measure") {
-    const r = measure(text);
+    const r = await measure(text);
     done(r, r.ok ? 0 : 3);
   }
   if (cmd === "render") {
@@ -52,7 +54,7 @@ try {
     if (!out) done({ ok: false, error: "render needs --out <directory>" }, 2);
     mkdirSync(out, { recursive: true });
     const views = opt("views", "iso,top").split(",");
-    const files = render(text, { views, size: Math.min(2048, Math.max(64, +opt("size", 512))) }).map(({ view, png }) => {
+    const files = (await render(text, { views, size: Math.min(2048, Math.max(64, +opt("size", 512))) })).map(({ view, png }) => {
       const path = join(out, `${view}.png`);
       writeFileSync(path, png);
       return path;
@@ -63,7 +65,7 @@ try {
     const out = opt("out");
     const format = opt("format");
     if (!out || !format) done({ ok: false, error: "export needs --format and --out" }, 2);
-    const { bytes } = exportBytes(text, format, { quality: opt("quality", "standard"), part: opt("part"), sizes: opt("sizes") });
+    const { bytes } = await exportBytes(text, format, { quality: opt("quality", "standard"), part: opt("part"), sizes: opt("sizes") });
     writeFileSync(out, bytes);
     done({ ok: true, file: out, bytes: bytes.length }, 0);
   }

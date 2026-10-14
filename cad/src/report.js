@@ -64,9 +64,9 @@ export function report(model, exact = null) {
   const minWall = d.rule.min_wall;
 
   // walls: the shank's thinnest point, then every part with a known thickness
-  const sm = shankMinWall(d, model.geom);
+  const sm = model.hasBand === false ? { mm: Infinity, w: 0 } : shankMinWall(d, model.geom);
   const thin = [
-    { name: "shank", v: sm.mm, p: [0, -(ri + ro) / 2, sm.w] },
+    ...(Number.isFinite(sm.mm) ? [{ name: "shank", v: sm.mm, p: [0, -(ri + ro) / 2, sm.w] }] : []),
     ...model.metal.filter((m) => m.thickness).map((m) => {
       m.geometry.computeBoundingBox();
       return { name: m.name, v: m.thickness, p: m.geometry.boundingBox.getCenter(new THREE.Vector3()).toArray() };
@@ -164,7 +164,12 @@ export function report(model, exact = null) {
   if (overlaps) checks.push({ level: "error", text: `${overlaps} stone pair(s) overlap` });
   if (d.stone.setting !== "none" && d.stone.dia > width * 3) checks.push({ level: "warn", text: "Centre stone is very large for this band width" });
   for (const w of model.warnings || []) checks.push({ level: "warn", text: w });
-  if (!checks.length) checks.push({ level: "ok", text: "No warnings" });
+  for (const [id, info] of Object.entries(model.sculptInfo || {})) {
+    if (info.unscaled) checks.push({ level: "warn", text: `sculpt ${id} is ${Math.max(...info.sizeBeforeRepair).toFixed(1)} mm across, which does not look like millimetres: use fit=ring or set scale=` });
+    if (info.removedPieces?.length) checks.push({ level: "info", text: `sculpt ${id}: removed ${info.removedPieces.length} loose piece(s)` });
+    if (info.notWatertight && info.method === "voxel") checks.push({ level: "info", text: `sculpt ${id} was not watertight; rebuilt as a solid (voxel ${info.voxel.toFixed(2)} mm)` });
+  }
+  if (!checks.some((c) => c.level === "error" || c.level === "warn")) checks.unshift({ level: "ok", text: "No warnings" });
 
   const c = CUTS[d.stone.cut];
   return {
@@ -175,7 +180,8 @@ export function report(model, exact = null) {
     parts,
     paveDia: model.paveDia,
     shrink: d.rule.shrink,
-    minWall: { shank: sm.mm, rule: minWall },
+    minWall: { shank: Number.isFinite(sm.mm) ? sm.mm : null, rule: minWall },
+    sculpts: model.sculptInfo || {},
     thinWalls: walls.map((w) => ({ name: w.name, mm: w.v, at: w.p })),
     stones: stoneList,
     stoneCount: model.stones.length,

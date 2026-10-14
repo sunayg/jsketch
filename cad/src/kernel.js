@@ -12,6 +12,7 @@ export async function initKernel(options) {
   return wasm;
 }
 export const kernelReady = () => wasm !== null;
+export const kernelModule = () => M();
 const M = () => {
   if (!wasm) throw new Error("Kernel not initialised: await initKernel() first");
   return wasm;
@@ -81,7 +82,13 @@ export function solidify(model, { seats = true } = {}) {
     const invalid = [];
     const parts = [];
     for (const p of model.metal) {
-      const m = track(toManifold(p.geometry));
+      let m = null;
+      try {
+        m = track(p.manifold ? p.manifold.translate([0, 0, 0]) : toManifold(p.geometry)); // sculpts arrive as solids
+      } catch {
+        invalid.push(p.name); // not a closed solid
+        continue;
+      }
       if (statusOk(m) && !m.isEmpty()) parts.push(m);
       else invalid.push(p.name);
     }
