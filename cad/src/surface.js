@@ -15,12 +15,19 @@ export class TriGrid {
       if (p[i + k] < min[k]) min[k] = p[i + k];
       if (p[i + k] > max[k]) max[k] = p[i + k];
     }
-    for (let t = 0; t < this.n; t += Math.max(1, Math.floor(this.n / 2000))) {
+    // typical triangle size from the median area (long slivers would
+    // inflate an edge-length average and pack thousands into one cell)
+    const areas = [];
+    for (let t = 0; t < this.n; t += Math.max(1, Math.floor(this.n / 4000))) {
       const o = t * 9;
-      edge = Math.max(edge * 0.98, 0) + 0.02 * Math.hypot(p[o + 3] - p[o], p[o + 4] - p[o + 1], p[o + 5] - p[o + 2]);
+      const ux = p[o + 3] - p[o], uy = p[o + 4] - p[o + 1], uz = p[o + 5] - p[o + 2];
+      const vx = p[o + 6] - p[o], vy = p[o + 7] - p[o + 1], vz = p[o + 8] - p[o + 2];
+      areas.push(Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2);
     }
+    areas.sort((a, b) => a - b);
+    edge = Math.sqrt(2 * (areas[areas.length >> 1] || 0));
     const big = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2], 1e-6);
-    cell ??= Math.min(1, Math.max(0.25, 3 * edge));
+    cell ??= Math.min(1, Math.max(0.12, 2 * edge));
     // keep the grid bounded for very large meshes (a sculpt in the wrong units)
     cell = Math.max(cell, big / 200);
     this.cell = cell;
@@ -71,6 +78,20 @@ export class TriGrid {
     const out = [];
     const q = ++this.query;
     const lo = this.ijk(p.x - r, p.y - r, p.z - r), hi = this.ijk(p.x + r, p.y + r, p.z + r);
+    const span = (hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1);
+    if (span > this.cells.size) {
+      // a big box over a fine grid: walk the occupied cells instead
+      const [nx, ny] = this.dims;
+      for (const [key, list] of this.cells) {
+        const i = key % nx, j = Math.floor(key / nx) % ny, k = Math.floor(key / (nx * ny));
+        if (i < lo[0] || i > hi[0] || j < lo[1] || j > hi[1] || k < lo[2] || k > hi[2]) continue;
+        for (const t of list) if (this.stamp[t] !== q) {
+          this.stamp[t] = q;
+          out.push(t);
+        }
+      }
+      return out;
+    }
     for (let i = lo[0]; i <= hi[0]; i++) for (let j = lo[1]; j <= hi[1]; j++) for (let k = lo[2]; k <= hi[2]; k++) {
       const list = this.cells.get(this.key(i, j, k));
       if (list) for (const t of list) if (this.stamp[t] !== q) {
@@ -168,7 +189,10 @@ function rayTri(o, d, a, b, c) {
 // Wall thickness at every vertex: distance inward (against the normal) to the
 // opposite surface. Returns per-vertex values (non-indexed order) and the
 // thinnest spot.
+const MAX = 4; // mm
 export function wallThickness(geometry, grid = new TriGrid(geometry)) {
+  // the normal is averaged over about two triangle widths (at least 0.2 mm)
+  const smoothR = Math.max(0.2, Math.min(0.4, grid.cell / 1.5));
   const p = grid.p;
   const out = new Float32Array(p.length / 3);
   let min = { mm: Infinity, at: [0, 0, 0] };
@@ -179,12 +203,13 @@ export function wallThickness(geometry, grid = new TriGrid(geometry)) {
     let d = cache.get(key);
     if (d === undefined) {
       const origin = new THREE.Vector3(p[v * 3], p[v * 3 + 1], p[v * 3 + 2]);
-      const n = grid.smoothNormal(origin, 0.4) || grid.normal(t);
-      const shoot = (dir) => grid.raycast(origin.clone().addScaledVector(n, -0.005), dir, 8, 0.005, true) ?? 8;
+      const n = grid.smoothNormal(origin, smoothR) || grid.normal(t);
+      // walls past MAX are reported as MAX: nothing that thick matters here
+      const shoot = (dir) => grid.raycast(origin.clone().addScaledVector(n, -0.005), dir, MAX, 0.005, true) ?? MAX;
       d = shoot(n.clone().negate());
       // a short reading is confirmed with a small cone of rays (median), so a
       // crease or a single odd triangle can't fake a thin wall
-      if (d < 2) {
+      if (d < 1.5) {
         const u = new THREE.Vector3(1, 0, 0).cross(n);
         if (u.lengthSq() < 1e-6) u.set(0, 1, 0).cross(n);
         u.normalize();
@@ -199,5 +224,68 @@ export function wallThickness(geometry, grid = new TriGrid(geometry)) {
     }
     out[v] = d;
   }
-  return { perVertex: out, min };
+  // and at each triangle's centre, along its own face normal: corner readings
+  // are unreliable on coarse meshes (a box corner's normal points out of it)
+  const perTri = new Float32Array(p.length / 9);
+  const c = new THREE.Vector3();
+  for (let t = 0; t < perTri.length; t++) {
+    const o = t * 9;
+    c.set((p[o] + p[o + 3] + p[o + 6]) / 3, (p[o + 1] + p[o + 4] + p[o + 7]) / 3, (p[o + 2] + p[o + 5] + p[o + 8]) / 3);
+    // a sliver's face normal is unreliable: use its corners' middle reading
+    const e2 = (a, b) => (p[o + a] - p[o + b]) ** 2 + (p[o + a + 1] - p[o + b + 1]) ** 2 + (p[o + a + 2] - p[o + b + 2]) ** 2;
+    const ux = p[o + 3] - p[o], uy = p[o + 4] - p[o + 1], uz = p[o + 5] - p[o + 2];
+    const vx = p[o + 6] - p[o], vy = p[o + 7] - p[o + 1], vz = p[o + 8] - p[o + 2];
+    const area = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
+    const quality = (4 * Math.sqrt(3) * area) / (e2(0, 3) + e2(3, 6) + e2(6, 0) || 1); // 1 = equilateral
+    if (quality < 0.3) {
+      perTri[t] = [out[t * 3], out[t * 3 + 1], out[t * 3 + 2]].sort((a, b) => a - b)[1];
+      continue;
+    }
+    const n = grid.normal(t);
+    const read = (dir) => grid.raycast(c.clone().addScaledVector(n, -0.005), dir, MAX, 0.005, true) ?? MAX;
+    let d = read(n.clone().negate());
+    if (d < 1.5) {
+      const u = new THREE.Vector3(1, 0, 0).cross(n);
+      if (u.lengthSq() < 1e-6) u.set(0, 1, 0).cross(n);
+      u.normalize();
+      const w = n.clone().cross(u);
+      const tilt = Math.tan((15 * Math.PI) / 180);
+      const reads = [d, ...[[1, 0], [-1, 0], [0, 1], [0, -1]].map(([a, b]) => read(n.clone().negate().addScaledVector(u, a * tilt).addScaledVector(w, b * tilt).normalize()) * Math.cos((15 * Math.PI) / 180))];
+      reads.sort((a, b) => a - b);
+      d = reads[2];
+    }
+    perTri[t] = d;
+  }
+  // the wall: thin over at least 0.1 mm² (a 0.35 mm disc, below what a
+  // casting reproduces anyway); specks: thin flakes or fins smaller than that
+  return { perVertex: out, perTri, min: thinnestPatch(p, perTri, 0.1) ?? min, speck: thinnestPatch(p, perTri, 0.005) };
+}
+
+// The thinnest wall that covers a real patch of surface (at least `minArea`
+// mm² of triangles at most that thick, within about 0.5 mm), so a single
+// sliver vertex or a hairline crevice where two shells meet doesn't count as
+// the piece's wall. Triangles are taken thinnest first, by the reading at
+// their centre.
+export function thinnestPatch(p, perTri, minArea = 0.1, cell = 0.5) {
+  const n = p.length / 9;
+  const tris = [];
+  for (let t = 0; t < n; t++) {
+    const o = t * 9;
+    const ux = p[o + 3] - p[o], uy = p[o + 4] - p[o + 1], uz = p[o + 5] - p[o + 2];
+    const vx = p[o + 6] - p[o], vy = p[o + 7] - p[o + 1], vz = p[o + 8] - p[o + 2];
+    const area = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
+    const th = perTri[t];
+    tris.push({ th, area, c: [0, 1, 2].map((k) => (p[o + k] + p[o + 3 + k] + p[o + 6 + k]) / 3) });
+  }
+  tris.sort((a, b) => a.th - b.th);
+  const acc = new Map();
+  const key = (i, j, k) => `${i},${j},${k}`;
+  for (const t of tris) {
+    const [i, j, k] = t.c.map((v) => Math.floor(v / cell));
+    acc.set(key(i, j, k), (acc.get(key(i, j, k)) || 0) + t.area);
+    let sum = 0;
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let c = -1; c <= 1; c++) sum += acc.get(key(i + a, j + b, k + c)) || 0;
+    if (sum >= minArea) return { mm: t.th, at: t.c };
+  }
+  return null;
 }

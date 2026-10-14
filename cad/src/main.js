@@ -282,9 +282,8 @@ const viewer = createViewer($("viewport"), {
     }
     // stored at the sculpt's own size, so the pavé follows it when resized
     const sc = design.sculpts.find((x) => x.id === on);
-    const base = sc ? sculptBaseInner(design, sc) : innerDiameterOf(design);
-    const dr = (innerDiameterOf(design) - base) / 2;
-    const back = ([x, y, z]) => (Math.abs(dr) > 1e-6 ? [...radialUnshift(x, y, dr, base / 2), z] : [x, y, z]);
+    const shift = sc && sculptsFor(design).get(sculptKey(sc))?.shift;
+    const back = ([x, y, z]) => (shift ? [...radialUnshift(x, y, shift.dr, shift.ro), z] : [x, y, z]);
     sp.pts.push(...dabs.map((p) => back(p).map((v) => Math.round(v * 100) / 100)));
     commit();
   },

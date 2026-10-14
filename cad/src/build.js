@@ -686,7 +686,7 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
         const g = merged(surfaceBeads(grid, row, sp.bead));
         if (g && shift) {
           const p = g.attributes.position.array;
-          for (let i = 0; i < p.length; i += 3) [p[i], p[i + 1]] = radialShift(p[i], p[i + 1], shift.dr, shift.ri);
+          for (let i = 0; i < p.length; i += 3) [p[i], p[i + 1]] = radialShift(p[i], p[i + 1], shift.dr, shift.ro);
           g.attributes.position.needsUpdate = true;
         }
         if (g) metal.push({ name: `beads ${id}`, obj: id, geometry: g, bead: true });

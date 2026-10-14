@@ -110,3 +110,15 @@ test("bundles open again: the zip reader and the stone list by object", async ()
   const m = await build(text);
   assert.ok(report(m, m.exact).stones.every((g) => g.role !== "surface" || g.obj === "p"));
 });
+
+test("wall check: a thin fin smaller than a casting holds is a speck, not the wall", async () => {
+  const { TriGrid, wallThickness } = await import("../src/surface.js");
+  // a 2 mm plate with a 0.15 x 0.15 x 0.03 mm flake just above it
+  const g = mergeGeometries([new THREE.BoxGeometry(10, 2, 10, 20, 4, 20), new THREE.BoxGeometry(0.15, 0.03, 0.15).translate(0, 1.2, 0)].map(plain));
+  const w = wallThickness(g, new TriGrid(g));
+  assert.ok(w.min.mm > 1.9, `wall ${w.min.mm}`);
+  assert.ok(w.speck && w.speck.mm < 0.1, `speck ${w.speck?.mm}`);
+  // a sliver-heavy grid stays fast: no cell holds thousands of triangles
+  const grid = new TriGrid(g);
+  assert.ok(Math.max(...[...grid.cells.values()].map((l) => l.length)) < 200);
+});

@@ -6,7 +6,7 @@ import { prepareSculpt } from "./sculpt.js";
 import { toGeometry } from "./kernel.js";
 import { parseSize } from "./sizes.js";
 import { TriGrid, wallThickness } from "./surface.js";
-import { radialShift } from "./resize.js";
+import { radialShift, bandOuterRadius } from "./resize.js";
 export { radialShift, radialUnshift, shiftFrame } from "./resize.js";
 
 const cache = new Map();
@@ -56,13 +56,14 @@ export async function resolveSculpts(design, loadAsset, opts = {}) {
 function resized(got, dr, ri) {
   const geometry = got.geometry.clone();
   const p = geometry.attributes.position.array;
-  for (let i = 0; i < p.length; i += 3) [p[i], p[i + 1]] = radialShift(p[i], p[i + 1], dr, ri);
+  const ro = (got.bandOuter ??= bandOuterRadius(got.geometry.attributes.position.array, ri));
+  for (let i = 0; i < p.length; i += 3) [p[i], p[i + 1]] = radialShift(p[i], p[i + 1], dr, ro);
   geometry.attributes.position.needsUpdate = true;
   const info = { ...got.info, resizedBy: +(2 * dr).toFixed(3) };
   if (info.bore) info.bore = +(info.bore + 2 * dr).toFixed(3);
   if (info.boreMin) info.boreMin = +(info.boreMin + 2 * dr).toFixed(3);
   // walls change where the sides are stretched: measure them again
-  return { ...withWall(geometry, info), base: got, shift: { dr, ri } };
+  return { ...withWall(geometry, info), base: got, shift: { dr, ri, ro } };
 }
 
 // Attach per-vertex wall thickness (for the heatmap) and the thinnest spot.
@@ -71,6 +72,7 @@ export function withWall(geometry, info) {
   const wall = wallThickness(geometry, grid);
   geometry.userData.thickness = wall.perVertex;
   info.minWall = wall.min;
+  if (wall.speck && wall.speck.mm < wall.min.mm - 0.05) info.speck = wall.speck;
   return { geometry, info, grid };
 }
 
