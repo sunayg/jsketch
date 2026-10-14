@@ -62,7 +62,7 @@ test("a clean sculpt goes straight in; debris is removed", () => {
   const { manifold, info } = prepareSculpt(both, {});
   assert.equal(info.method, "direct");
   assert.equal(info.pieces, 2);
-  assert.equal(info.removedPieces.length, 1);
+  assert.equal(info.removedPieces, 1);
   assert.ok(manifold.boundingBox().max[0] < 7);
   manifold.delete();
 });
@@ -146,7 +146,7 @@ test("CLI and MCP: a broken AI ring sculpt is imported, repaired, fitted and mea
   assert.equal(m.metal.exact, true);
   const info = m.sculpts.ring;
   assert.equal(info.method, "voxel");
-  assert.equal(info.removedPieces.length, 1);
+  assert.equal(info.removedPieces, 1);
   assert.ok(info.size[1] > info.size[0] + 2, `head on top: ${info.size}`);
   assert.ok(m.metal.weightG > 5 && m.metal.weightG < 10, String(m.metal.weightG));
 

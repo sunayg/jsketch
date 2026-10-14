@@ -3,26 +3,59 @@
 import * as THREE from "three";
 
 export class TriGrid {
-  constructor(geometry, cell = 1) {
+  // cell: grid spacing in mm; by default about three triangle edges, so a
+  // cell holds a handful of triangles
+  constructor(geometry, cell = null) {
     const g = geometry.index ? geometry.toNonIndexed() : geometry;
-    this.p = g.attributes.position.array;
-    this.n = this.p.length / 9;
+    const p = (this.p = g.attributes.position.array);
+    this.n = p.length / 9;
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    let edge = 0;
+    for (let i = 0; i < p.length; i += 3) for (let k = 0; k < 3; k++) {
+      if (p[i + k] < min[k]) min[k] = p[i + k];
+      if (p[i + k] > max[k]) max[k] = p[i + k];
+    }
+    for (let t = 0; t < this.n; t += Math.max(1, Math.floor(this.n / 2000))) {
+      const o = t * 9;
+      edge = Math.max(edge * 0.98, 0) + 0.02 * Math.hypot(p[o + 3] - p[o], p[o + 4] - p[o + 1], p[o + 5] - p[o + 2]);
+    }
+    const big = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2], 1e-6);
+    cell ??= Math.min(1, Math.max(0.25, 3 * edge));
+    // keep the grid bounded for very large meshes (a sculpt in the wrong units)
+    cell = Math.max(cell, big / 200);
     this.cell = cell;
+    this.min = min.map((v) => v - cell);
+    this.dims = [0, 1, 2].map((k) => Math.ceil((max[k] - this.min[k]) / cell) + 2);
     this.normals = new Float32Array(this.n * 3);
     this.cells = new Map();
+    this.stamp = new Int32Array(this.n);
+    this.query = 0;
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    const ab = new THREE.Vector3(), ac = new THREE.Vector3();
     for (let t = 0; t < this.n; t++) {
       this.tri(t, a, b, c);
-      const nrm = b.clone().sub(a).cross(c.clone().sub(a));
+      const nrm = ab.subVectors(b, a).cross(ac.subVectors(c, a));
       const len = nrm.length() || 1;
-      this.normals.set([nrm.x / len, nrm.y / len, nrm.z / len], t * 3);
-      const lo = [Math.min(a.x, b.x, c.x), Math.min(a.y, b.y, c.y), Math.min(a.z, b.z, c.z)].map((v) => Math.floor(v / cell));
-      const hi = [Math.max(a.x, b.x, c.x), Math.max(a.y, b.y, c.y), Math.max(a.z, b.z, c.z)].map((v) => Math.floor(v / cell));
+      this.normals[t * 3] = nrm.x / len;
+      this.normals[t * 3 + 1] = nrm.y / len;
+      this.normals[t * 3 + 2] = nrm.z / len;
+      const lo = this.ijk(Math.min(a.x, b.x, c.x), Math.min(a.y, b.y, c.y), Math.min(a.z, b.z, c.z));
+      const hi = this.ijk(Math.max(a.x, b.x, c.x), Math.max(a.y, b.y, c.y), Math.max(a.z, b.z, c.z));
       for (let i = lo[0]; i <= hi[0]; i++) for (let j = lo[1]; j <= hi[1]; j++) for (let k = lo[2]; k <= hi[2]; k++) {
-        const key = `${i},${j},${k}`;
-        (this.cells.get(key) || this.cells.set(key, []).get(key)).push(t);
+        const key = this.key(i, j, k);
+        const list = this.cells.get(key);
+        if (list) list.push(t);
+        else this.cells.set(key, [t]);
       }
     }
+  }
+  ijk(x, y, z) {
+    const [nx, ny, nz] = this.dims;
+    const c = (v, k, n) => Math.min(n - 1, Math.max(0, Math.floor((v - this.min[k]) / this.cell)));
+    return [c(x, 0, nx), c(y, 1, ny), c(z, 2, nz)];
+  }
+  key(i, j, k) {
+    return i + this.dims[0] * (j + this.dims[1] * k);
   }
   tri(t, a, b, c) {
     const p = this.p, o = t * 9;
@@ -33,13 +66,17 @@ export class TriGrid {
   normal(t) {
     return new THREE.Vector3(this.normals[t * 3], this.normals[t * 3 + 1], this.normals[t * 3 + 2]);
   }
-  // triangle ids whose cells touch the sphere (p, r)
+  // triangle ids whose cells touch the sphere (p, r), each once
   near(p, r) {
-    const out = new Set();
-    const lo = [p.x - r, p.y - r, p.z - r].map((v) => Math.floor(v / this.cell));
-    const hi = [p.x + r, p.y + r, p.z + r].map((v) => Math.floor(v / this.cell));
+    const out = [];
+    const q = ++this.query;
+    const lo = this.ijk(p.x - r, p.y - r, p.z - r), hi = this.ijk(p.x + r, p.y + r, p.z + r);
     for (let i = lo[0]; i <= hi[0]; i++) for (let j = lo[1]; j <= hi[1]; j++) for (let k = lo[2]; k <= hi[2]; k++) {
-      for (const t of this.cells.get(`${i},${j},${k}`) || []) out.add(t);
+      const list = this.cells.get(this.key(i, j, k));
+      if (list) for (const t of list) if (this.stamp[t] !== q) {
+        this.stamp[t] = q;
+        out.push(t);
+      }
     }
     return out;
   }
@@ -71,28 +108,61 @@ export class TriGrid {
   // fromInside, only hits on a wall facing along the ray count (the far side
   // of the solid), so grazing a neighbouring face in a crease is ignored.
   raycast(origin, dir, maxDist = 10, skip = 0.01, fromInside = false) {
-    const ray = new THREE.Ray(origin, dir);
-    const tri = new THREE.Triangle();
-    const hit = new THREE.Vector3();
-    const seen = new Set();
+    // walk the grid cells along the ray (Amanatides & Woo)
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    const q = ++this.query;
+    const h = this.cell, [nx, ny, nz] = this.dims;
+    const o = [origin.x, origin.y, origin.z], d = [dir.x, dir.y, dir.z];
+    const cellOf = this.ijk(o[0], o[1], o[2]);
+    const step = d.map((v) => (v > 0 ? 1 : v < 0 ? -1 : 0));
+    const tMax = d.map((v, k) => {
+      if (!v) return Infinity;
+      const edge = this.min[k] + (cellOf[k] + (v > 0 ? 1 : 0)) * h;
+      return (edge - o[k]) / v;
+    });
+    const tDelta = d.map((v) => (v ? h / Math.abs(v) : Infinity));
     let best = Infinity;
-    const steps = Math.ceil(maxDist / (this.cell * 0.5));
-    for (let s = 0; s <= steps; s++) {
-      const at = origin.clone().addScaledVector(dir, (s * maxDist) / steps);
-      for (const t of this.near(at, this.cell * 0.5)) {
-        if (seen.has(t)) continue;
-        seen.add(t);
-        this.tri(t, tri.a, tri.b, tri.c);
-        if (ray.intersectTriangle(tri.a, tri.b, tri.c, false, hit)) {
-          if (fromInside && this.normal(t).dot(dir) < 0.2) continue;
-          const d = hit.distanceTo(origin);
-          if (d > skip && d < best) best = d;
-        }
+    let [i, j, k] = cellOf;
+    for (let t0 = 0; t0 <= maxDist; ) {
+      const list = this.cells.get(this.key(i, j, k));
+      if (list) for (const t of list) {
+        if (this.stamp[t] === q) continue;
+        this.stamp[t] = q;
+        this.tri(t, a, b, c);
+        const dist = rayTri(o, d, a, b, c);
+        if (dist === null || dist <= skip || dist >= best) continue;
+        if (fromInside && this.normals[t * 3] * d[0] + this.normals[t * 3 + 1] * d[1] + this.normals[t * 3 + 2] * d[2] < 0.2) continue;
+        best = dist;
       }
-      if (best < (s * maxDist) / steps - this.cell) break;
+      // next cell
+      const ax = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : tMax[1] < tMax[2] ? 1 : 2;
+      t0 = tMax[ax];
+      if (best <= t0) break; // nothing in later cells can be nearer
+      tMax[ax] += tDelta[ax];
+      if (ax === 0) i += step[0];
+      else if (ax === 1) j += step[1];
+      else k += step[2];
+      if (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) break;
     }
     return best <= maxDist ? best : null;
   }
+}
+
+// Möller–Trumbore, both faces; distance along a unit direction, or null.
+function rayTri(o, d, a, b, c) {
+  const e1x = b.x - a.x, e1y = b.y - a.y, e1z = b.z - a.z;
+  const e2x = c.x - a.x, e2y = c.y - a.y, e2z = c.z - a.z;
+  const px = d[1] * e2z - d[2] * e2y, py = d[2] * e2x - d[0] * e2z, pz = d[0] * e2y - d[1] * e2x;
+  const det = e1x * px + e1y * py + e1z * pz;
+  if (Math.abs(det) < 1e-12) return null;
+  const inv = 1 / det;
+  const tx = o[0] - a.x, ty = o[1] - a.y, tz = o[2] - a.z;
+  const u = (tx * px + ty * py + tz * pz) * inv;
+  if (u < 0 || u > 1) return null;
+  const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+  const v = (d[0] * qx + d[1] * qy + d[2] * qz) * inv;
+  if (v < 0 || u + v > 1) return null;
+  return (e2x * qx + e2y * qy + e2z * qz) * inv;
 }
 
 // Wall thickness at every vertex: distance inward (against the normal) to the

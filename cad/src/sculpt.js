@@ -100,50 +100,125 @@ const unit = (a) => {
   return a.map((v) => v / l);
 };
 
-// Find the finger hole, then orient (finger axis -> Z, head -> +Y), centre and
-// scale the sculpt so its bore matches the ring's inside diameter. The axis
-// can point anywhere: candidates are the principal directions of the shape.
+// The bore seen down an axis: points in 2D (already centred near the hole).
+// Each of B angular sectors gives its innermost point; a circle through those
+// (dropping sectors something pokes into) gives the centre, and the median
+// sector distance the bore radius. Returns null when the centre is not
+// surrounded by material, i.e. there is no hole down this axis.
+const SECTORS = 72;
+function boreFit(pts, start = [0, 0]) {
+  let [cx, cy] = start;
+  let res = null;
+  for (let it = 0; it < 16; it++) {
+    const mins = new Float64Array(SECTORS).fill(Infinity), at = new Array(SECTORS);
+    for (const p of pts) {
+      const dx = p[0] - cx, dy = p[1] - cy, d = Math.hypot(dx, dy);
+      const b = Math.min(SECTORS - 1, Math.floor(((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI)) * SECTORS));
+      if (d < mins[b]) [mins[b], at[b]] = [d, p];
+    }
+    const filled = [...mins.keys()].filter((b) => Number.isFinite(mins[b]));
+    if (filled.length < SECTORS * 0.75) return null;
+    const sorted = filled.map((b) => mins[b]).sort((a, b) => a - b);
+    const med = sorted[sorted.length >> 1];
+    if (!(med > 0)) return null;
+    // loose at first (the start can be well off-centre), then tight
+    const tol = it < 4 ? 0.45 : 0.12;
+    const good = filled.filter((b) => Math.abs(mins[b] - med) < tol * med);
+    if (good.length < SECTORS * 0.4) {
+      if (it < 4) continue;
+      return null;
+    }
+    const c = fitCircle(good.map((b) => at[b]));
+    if (!Number.isFinite(c.cx) || !Number.isFinite(c.cy)) return null;
+    const moved = Math.hypot(c.cx - cx, c.cy - cy);
+    [cx, cy] = [c.cx, c.cy];
+    res = { cx, cy, coverage: filled.length / SECTORS };
+    if (it >= 4 && moved < 1e-5 * med) break;
+  }
+  if (!res) return null;
+  const d = pts.map((p) => Math.hypot(p[0] - res.cx, p[1] - res.cy)).sort((a, b) => a - b);
+  // radius: median over sectors; rmin: the closest point of all (something
+  // sticking into the hole); far: a robust outer size for the hole score
+  const mins = new Float64Array(SECTORS).fill(Infinity);
+  for (const p of pts) {
+    const dx = p[0] - res.cx, dy = p[1] - res.cy;
+    const b = Math.min(SECTORS - 1, Math.floor(((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI)) * SECTORS));
+    mins[b] = Math.min(mins[b], Math.hypot(dx, dy));
+  }
+  const sm = [...mins].filter(Number.isFinite).sort((a, b) => a - b);
+  const r = sm[sm.length >> 1];
+  const near = d.filter((v) => v < 4 * r); // ignore debris well away from the ring
+  const far = near[Math.floor(near.length * 0.9)];
+  const intruders = d.filter((v) => v < r * 0.9).length / d.length;
+  return { ...res, r, rmin: d[0], far, intruders };
+}
+const median = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+
+// Find the finger hole, then orient (finger axis -> Z), centre and scale the
+// sculpt so its bore matches the ring's inside diameter. The axis can point
+// anywhere: candidates are the principal directions of the shape and the
+// file's own axes. Works in any units, and ignores debris away from the ring.
 export function fitRing(pos, innerDiameter) {
+  if (pos.length / 9 < 20) throw new Error("Too few triangles to find a finger hole");
   const stride = Math.max(1, Math.floor(pos.length / 3 / 60000)) * 3;
   const P = [];
   for (let i = 0; i < pos.length; i += stride) P.push([pos[i], pos[i + 1], pos[i + 2]]);
-  const mean = [0, 1, 2].map((k) => P.reduce((s, p) => s + p[k], 0) / P.length);
+  // work in units of the shape's size so the numbers are the same in um or m
+  const b = bounds(pos);
+  const unitLen = Math.hypot(...b.size) || 1;
+  const Q = P.map((p) => p.map((v, k) => (v - b.min[k]) / unitLen));
+  const mean = [0, 1, 2].map((k) => Q.reduce((s, p) => s + p[k], 0) / Q.length);
   const C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-  for (const p of P) for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) C[r][c] += (p[r] - mean[r]) * (p[c] - mean[c]);
-  const axes = eigen3(C).sort((x, y) => x.value - y.value).map((e) => unit(e.vector));
+  for (const p of Q) for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) C[r][c] += (p[r] - mean[r]) * (p[c] - mean[c]);
+  const axes = eigen3(C).map((e) => unit(e.vector));
+  for (const w of [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) if (axes.every((a) => Math.abs(dot(a, w)) < 0.995)) axes.push(w);
+  const med3 = [0, 1, 2].map((k) => median(Q.map((p) => p[k])));
+  const box3 = [0, 1, 2].map((k) => (b.size[k] / 2) / unitLen);
+  const frame = (e) => {
+    const u0 = unit(crossV(e, Math.abs(e[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    return [u0, crossV(e, u0)]; // u0 x v0 = e: right-handed
+  };
+  const sample = Q.length > 20000 ? Q.filter((_, i) => i % Math.ceil(Q.length / 20000) === 0) : Q;
+  const tryAxis = (e, starts, pts = sample) => {
+    const [u0, v0] = frame(e);
+    const P2 = pts.map((p) => [dot(p, u0), dot(p, v0)]);
+    let out = null;
+    for (const s of starts) {
+      const f = boreFit(P2, [dot(s, u0), dot(s, v0)]);
+      if (!f || f.intruders > 0.03 || f.r / f.far < 0.25) continue;
+      if (!out || f.r > out.r) out = { e, u0, v0, ...f, score: f.r / f.far, start: s };
+    }
+    return out;
+  };
+  // the finger hole is the widest clear opening; looking down it at a slant
+  // narrows it, so the axis is refined by climbing towards a wider opening
   let best = null;
   for (const e of axes) {
-    const u0 = unit(crossV(e, Math.abs(e[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
-    const v0 = crossV(e, u0); // u0 x v0 = e: right-handed
-    const pts = P.map((p) => {
-      const d = [p[0] - mean[0], p[1] - mean[1], p[2] - mean[2]];
-      return [dot(d, u0), dot(d, v0)];
-    });
-    // centre: circle through the innermost points; radius: the bore itself
-    // (closest distance), which is what the finger actually touches
-    let cx = 0, cy = 0, r = 0;
-    for (let it = 0; it < 8; it++) {
-      const d = pts.map(([x, y]) => Math.hypot(x - cx, y - cy));
-      const rmin = Math.min(...d);
-      const inner = pts.filter((_, i) => d[i] <= rmin * 1.03 + 1e-9);
-      if (inner.length < 8) break;
-      const c = fitCircle(inner);
-      if (!Number.isFinite(c.r)) break;
-      [cx, cy] = [c.cx, c.cy];
-    }
-    r = Math.min(...pts.map(([x, y]) => Math.hypot(x - cx, y - cy)));
-    const rmax = Math.max(...pts.map(([x, y]) => Math.hypot(x - cx, y - cy)));
-    const intruders = pts.filter(([x, y]) => Math.hypot(x - cx, y - cy) < r * 0.9).length / pts.length;
-    const score = intruders < 0.01 ? r / rmax : 0;
-    if (!best || score > best.score) best = { e, u0, v0, cx, cy, r, score };
+    const f = tryAxis(e, [mean, med3, box3]);
+    if (f && (!best || f.r > best.r)) best = f;
   }
-  if (!best || best.score < 0.25) throw new Error("No finger hole found: position and scale the sculpt by hand (fit=none)");
+  if (!best) throw new Error("No finger hole found: position and scale the sculpt by hand (fit=none)");
+  for (const step of [8, 4, 2, 1, 0.5].map((a) => a * deg)) {
+    for (let moved = true, guard = 0; moved && guard < 20; guard++) {
+      moved = false;
+      for (const [a, c] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const e = unit(best.e.map((v, k) => v * Math.cos(step) + (best.u0[k] * a + best.v0[k] * c) * Math.sin(step)));
+        const f = tryAxis(e, [best.start]);
+        if (f && f.r > best.r * (1 + 1e-6)) {
+          best = f;
+          moved = true;
+          break;
+        }
+      }
+    }
+  }
+  best = tryAxis(best.e, [best.start], Q) ?? best;
   const { e, u0, v0, cx, cy, r } = best;
-  // centre of the bore in 3D, and along the axis the middle of the shape
-  const along = P.map((p) => dot([p[0] - mean[0], p[1] - mean[1], p[2] - mean[2]], e));
-  const mid = (Math.min(...along) + Math.max(...along)) / 2;
-  const centre = [0, 1, 2].map((k) => mean[k] + u0[k] * cx + v0[k] * cy + e[k] * mid);
-  const k = innerDiameter / 2 / r;
+  // along the axis: the middle of the material around the hole
+  const along = Q.filter((p) => Math.hypot(dot(p, u0) - cx, dot(p, v0) - cy) < 2 * r).map((p) => dot(p, e)).sort((x, y) => x - y);
+  const mid = (along[Math.floor(along.length * 0.005)] + along[Math.floor(along.length * 0.995)]) / 2;
+  const centre = [0, 1, 2].map((k) => b.min[k] + unitLen * (u0[k] * cx + v0[k] * cy + e[k] * mid));
+  const k = innerDiameter / 2 / (r * unitLen);
   const out = new Float32Array(pos.length);
   for (let i = 0; i < pos.length; i += 3) {
     const d = [pos[i] - centre[0], pos[i + 1] - centre[1], pos[i + 2] - centre[2]];
@@ -152,7 +227,24 @@ export function fitRing(pos, innerDiameter) {
     out[i + 2] = dot(d, e) * k;
   }
   // (the head is turned to +Y later, once loose debris has been removed)
-  return { positions: out, info: { fingerAxis: e.map((v) => +v.toFixed(3)), boreRadius: r, scale: k, holeRatio: best.score } };
+  return { positions: out, info: { fingerAxis: e.map((v) => +v.toFixed(3)), boreRadius: r * unitLen, scale: k, holeRatio: +best.score.toFixed(3) } };
+}
+
+// After repair the bore can be a little off (voxel smoothing pulls surfaces
+// in): re-measure it on the finished solid and move/scale it onto the ring.
+function refineBore(man, innerDiameter) {
+  const mesh = man.getMesh();
+  const pts = [];
+  const vp = mesh.vertProperties;
+  for (let i = 0; i < vp.length; i += mesh.numProp) pts.push([vp[i], vp[i + 1]]);
+  const f = boreFit(pts, [0, 0]);
+  if (!f) return { man, bore: null };
+  const k = innerDiameter / 2 / f.r;
+  const moved = man.translate([-f.cx, -f.cy, 0]);
+  const scaled = moved.scale([k, k, k]);
+  moved.delete();
+  man.delete();
+  return { man: scaled, bore: 2 * f.r * k, boreMin: 2 * f.rmin * k, correction: k };
 }
 
 // ---------- voxel remesh ----------
@@ -271,8 +363,10 @@ export function voxelRemesh(pos, { voxel = 0.15, close = 0, smooth = 1, hollow =
       phi = next;
     }
   }
-  // 7. hollow: keep a shell `hollow` mm thick under the surface
-  if (hollow > 0) for (let i = 0; i < N; i++) phi[i] = Math.min(phi[i], hollow - phi[i]);
+  // 7. hollow: keep a shell `hollow` mm thick under the surface. The surface
+  // is the level h/2 (surface voxels count as inside), so the inner wall
+  // sits at hollow + h/2 as well.
+  if (hollow > 0) for (let i = 0; i < N; i++) phi[i] = Math.min(phi[i], hollow + h - phi[i]);
 
   const sdf = ([x, y, z]) => {
     const fx = (x - origin[0]) / h, fy = (y - origin[1]) / h, fz = (z - origin[2]) / h;
@@ -305,20 +399,26 @@ function soupToManifold(pos) {
 export function prepareSculpt(soup, opts = {}, ctx = {}) {
   const { Manifold } = kernelModule();
   const o = { fit: "none", repair: "auto", voxel: 0.15, close: 0, smooth: 0, keep: "largest", hollow: 0, symmetrize: "none", simplify: "yes", ...opts };
+  if (!soup?.length) throw new Error("The mesh has no triangles");
   const info = { inputTriangles: soup.length / 9 };
+  const inner = ctx.innerDiameter ?? 17.32;
   let pos = soup;
   if (o.fit === "ring") {
-    const f = fitRing(pos, ctx.innerDiameter ?? 17.32);
+    const f = fitRing(pos, inner);
     pos = f.positions;
     info.fit = f.info;
   }
   pos = transformSoup(pos, o);
   const b = bounds(pos);
   info.sizeBeforeRepair = b.size;
-  if (o.fit !== "ring" && (Math.max(...b.size) < 5 || Math.max(...b.size) > 120)) info.unscaled = true;
+  const big = Math.max(...b.size);
+  if (o.fit !== "ring" && (big < 5 || big > 120)) {
+    info.unscaled = true;
+    // a ring in micrometres or metres: don't try to voxelize or measure it
+    if (big > 1000 || big < 0.5) throw new Error(`The mesh is ${big.toPrecision(3)} units across, not a ring in millimetres: use fit=ring or scale=`);
+  }
 
   let man = null;
-  const wantsVoxel = o.repair === "voxel" || o.smooth > 0 || o.hollow > 0 || o.close > 0;
   // always check whether the input is already a closed solid (cheap), so
   // the report can say so even when a voxel rebuild was asked for
   let direct = null;
@@ -329,17 +429,39 @@ export function prepareSculpt(soup, opts = {}, ctx = {}) {
   }
   const valid = direct && String(direct.status()) === "NoError" && !direct.isEmpty() && direct.volume() > 0;
   info.notWatertight = !valid;
+  // a broken mesh needs its holes closed, or the flood fill leaks inside
+  let close = o.close;
+  if (!valid && o.repair === "auto" && close < 2) {
+    close = 2;
+    info.autoClose = 2;
+  }
+  const wantsVoxel = o.repair === "voxel" || o.smooth > 0 || o.hollow > 0 || close > 0;
   if (valid && !wantsVoxel) {
-    man = direct;
+    // separate closed shells that overlap (a head modelled on top of the
+    // band) are one piece of metal: union them before looking for debris
+    const parts = direct.decompose();
+    const bodies = parts.filter((p) => p.volume() > 0);
+    const cavities = parts.filter((p) => p.volume() <= 0);
+    if (bodies.length > 1) {
+      const merged = Manifold.union(bodies);
+      man = cavities.length ? Manifold.compose([merged, ...cavities]) : merged;
+      if (cavities.length) merged.delete();
+      for (const p of parts) p.delete();
+    } else {
+      for (const p of parts) p.delete();
+      man = direct;
+    }
+    if (man !== direct) direct.delete();
     info.method = "direct";
   } else direct?.delete();
   if (!man) {
     if (o.repair === "none") throw new Error("The mesh is not watertight; use repair=voxel (or auto) to rebuild it");
-    const r = voxelRemesh(pos, { voxel: o.voxel, close: o.close, smooth: o.smooth, hollow: o.hollow });
+    const r = voxelRemesh(pos, { voxel: o.voxel, close, smooth: o.smooth, hollow: o.hollow });
     man = r.manifold;
     info.method = "voxel";
     info.voxel = r.voxel;
   }
+  if (man.isEmpty()) throw new Error("Nothing solid is left after repair: try a larger close=");
   // keep the largest piece (debris, floaters)
   const parts = man.decompose();
   // a hollow solid decomposes into its outer body plus inner cavities
@@ -351,18 +473,21 @@ export function prepareSculpt(soup, opts = {}, ctx = {}) {
     const keep = bodies[0];
     const kb = keep.boundingBox();
     const inside = (m) => {
-      const b = m.boundingBox();
-      return b.min.every((v, k) => v >= kb.min[k] - 1e-6) && b.max.every((v, k) => v <= kb.max[k] + 1e-6);
+      const bb = m.boundingBox();
+      return bb.min.every((v, k) => v >= kb.min[k] - 1e-6) && bb.max.every((v, k) => v <= kb.max[k] + 1e-6);
     };
-    info.removedPieces = bodies.slice(1).map((p) => +p.volume().toFixed(3));
+    const removed = bodies.slice(1).map((p) => p.volume());
+    info.removedPieces = removed.length;
+    info.removedVolume = +removed.reduce((a, v) => a + v, 0).toFixed(3);
     const kept = [keep, ...cavities.filter(inside)];
     man.delete();
     man = kept.length > 1 ? Manifold.compose(kept) : keep;
-    for (const p of parts) if (p !== man) p.delete();
+    for (const p of parts) if (p !== man && !kept.includes(p)) p.delete();
+    if (kept.length > 1) for (const p of kept) p.delete();
   } else for (const p of parts) p.delete();
-  // fitted rings: turn about the finger axis so the head (the point farthest
-  // from the axis) is on top, +Y; done after cleanup so debris can't win
   if (o.fit === "ring") {
+    // turn about the finger axis so the head (the point farthest from the
+    // axis) is on top, +Y; done after cleanup so debris can't win
     const mesh = man.getMesh();
     let far = 0, fx = 0, fy = 1;
     for (let i = 0; i < mesh.vertProperties.length; i += mesh.numProp) {
@@ -373,6 +498,10 @@ export function prepareSculpt(soup, opts = {}, ctx = {}) {
     const turned = man.rotate([0, 0, (Math.atan2(fx, fy) * 180) / Math.PI]);
     man.delete();
     man = turned;
+    // and size the finished bore exactly
+    const r = refineBore(man, inner);
+    man = r.man;
+    if (r.bore) Object.assign(info, { bore: +r.bore.toFixed(3), boreMin: +r.boreMin.toFixed(3), boreCorrection: +r.correction.toFixed(4) });
   }
   // symmetrize: keep one half and mirror it across x = 0
   if (o.symmetrize === "x+" || o.symmetrize === "x-") {

@@ -14,6 +14,10 @@ export const diaForCarat = (cut, ct) => Math.cbrt(ct / (CUTS[cut].k * CUTS[cut].
 function normalise(text) {
   let t = ` ${text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")} `;
   t = t.replace(/[,;!?]/g, " ").replace(/½/g, ".5").replace(/¼/g, ".25").replace(/¾/g, ".75");
+  // fractions: "7 1/4", "7-1/4" -> 7.25; "1/2" -> 0.5
+  const frac = (n, dd) => String(Math.round((n / dd) * 1000) / 1000);
+  t = t.replace(/\b(\d+)[\s-]+(\d+)\/(\d+)\b/g, (m, w, n, dd) => (+dd && +n < +dd ? String(+w + +frac(+n, +dd)) : m));
+  t = t.replace(/\b(\d+)\/(\d+)\b/g, (m, n, dd) => (+dd ? frac(+n, +dd) : m));
   t = t.replace(/\b(\d+)\s+and\s+(?:a\s+)?half\b/g, (_, n) => `${n}.5`);
   t = t.replace(/\b(\d+)\s+and\s+(?:a\s+)?quarter\b/g, (_, n) => `${n}.25`);
   t = t.replace(/\b(\d+)\s+and\s+three\s+quarters?\b/g, (_, n) => `${n}.75`);
@@ -25,7 +29,7 @@ function normalise(text) {
   return t;
 }
 
-const NEG = String.raw`(?:no|without|remove|delete|drop|lose|take\s+off|take\s+away|get\s+rid\s+of)\b[^.]{0,20}?\b`;
+const NEG = String.raw`(?:no|not|never|without|remove|delete|drop|lose|take\s+off|take\s+away|get\s+rid\s+of)\b(?:(?!\bbut\b|\binstead\b|\brather\b|\bswap\b|\bwith\b)[^.]){0,20}?\b`;
 
 export function interpret(text, design) {
   const d = structuredClone(design);
@@ -49,7 +53,16 @@ export function interpret(text, design) {
 
   // metal: only alloys we stock; never substitute silently
   const gold = /\b(9|10|14|18|22)\s*(?:k|kt|karat|carat)\b(?:\s+(white|rose|yellow))?(?:\s+gold)?|\b(white|rose|yellow)\s+gold\b/.exec(t);
-  const named = [[/\bplatinum\b/, "platinum"], [/\bpalladium\b/, "palladium"], [/\btitanium\b/, "titanium"], [/\b(?:stainless|steel)\b/, "stainless"], [/\b(?:sterling|silver)\b/, "silver-925"], [/\bbrass\b/, "brass"], [/\bbronze\b/, "bronze"], [/\bcopper\b/, "copper"]].find(([re]) => re.test(t));
+  const metalWords = [["platinum", "platinum"], ["palladium", "palladium"], ["titanium", "titanium"], ["(?:stainless|steel)", "stainless"], ["(?:sterling|silver)", "silver-925"], ["brass", "brass"], ["bronze", "bronze"], ["copper", "copper"]];
+  // "not platinum" rules a metal out rather than choosing it
+  let ruledOut = null;
+  for (const [w, key] of metalWords) {
+    const neg = negated(w);
+    if (!neg) continue;
+    use(neg);
+    if (d.ring.metal === key) ruledOut = key;
+  }
+  const named = metalWords.map(([w, key]) => [new RegExp(`\\b${w}\\b`), key, w]).find(([re, , w]) => re.test(t) && !negated(w));
   if (named) {
     d.ring.metal = named[1];
     used.add(named[1].split("-")[0]).add("sterling").add("steel").add("stainless");
@@ -64,6 +77,7 @@ export function interpret(text, design) {
       change("ring", `metal ${METALS[key].label}`);
     } else notes.push(`${karat}k ${colour} gold is not in the alloy list, so the metal stays ${METALS[d.ring.metal].label}`);
   }
+  if (ruledOut && d.ring.metal === ruledOut) notes.push(`You ruled out ${METALS[ruledOut].label} but did not say which metal instead, so it is unchanged; name one (for example 18k white gold)`);
 
   // plain band / eternity
   if (/\beternity\b/.test(t)) {
@@ -135,6 +149,7 @@ export function interpret(text, design) {
     }
   }
 
+  const noBand = d.shank.profile === "none";
   // halo: add, change kind, or remove
   const noHalo = negated("halo");
   const halo = /\b(?:(double|hidden|single)\s+)?halo\b/.exec(t);
@@ -146,6 +161,7 @@ export function interpret(text, design) {
     d.halo = { dia: 1.2, gap: 0.1, ...(halo[1] && halo[1] !== "single" ? { kind: halo[1] } : {}) };
     use(halo);
     change("halo", `${halo[1] ? halo[1] + " " : ""}halo`);
+    if (d.sculpts.length) notes.push("The halo is placed for a standard head; check that it sits where you want on the sculpt");
   }
 
   // side stones
@@ -154,6 +170,9 @@ export function interpret(text, design) {
     d.accents = [];
     use(noSides);
     change("accent", "no side stones");
+  } else if (/\b(3[\s-]stone|three[\s-]stone|side\s+stones?|trilogy)\b/.test(t) && noBand) {
+    for (const w of ["3", "three", "stone", "3-stone", "three-stone", "side", "stones", "trilogy"]) used.add(w);
+    notes.push("Side stones sit on the band, and this ring has none (shank profile is none); add them on the sculpt with the Surface tool instead");
   } else if (/\b(3[\s-]stone|three[\s-]stone|side\s+stones?|trilogy)\b/.test(t)) {
     d.accents = d.accents.filter((a) => a.id !== "side");
     d.accents.push({ id: "side", cut: "round", dia: Math.round(d.stone.dia * 0.55 * 10) / 10, s: Math.round((d.stone.dia * 0.55 + d.stone.dia) * 0.6 * 10) / 10, w: 0, setting: "prong", mirror: "yes", prongs: 4 });
@@ -169,6 +188,9 @@ export function interpret(text, design) {
     d.regions = d.regions.filter((r) => r.id === "eternity");
     use(noPave);
     change("region", "no pavé on the band");
+  } else if (/\bpave\b/.test(t) && !/eternity/.test(t) && noBand) {
+    used.add("pave");
+    notes.push("Shoulder pavé sits on the band, and this ring has none (shank profile is none); paint pavé on the sculpt with the Surface tool instead");
   } else if (/\bpave\b/.test(t) && !/eternity/.test(t)) {
     d.regions = d.regions.filter((r) => r.id !== "shoulder");
     const h = Math.round(Math.max(0.6, d.shank.width / 2 - 0.1) * 100) / 100;

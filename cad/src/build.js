@@ -480,6 +480,7 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
   const metal = [];
   const stones = [];
   const warnings = [];
+  const errors = []; // problems that make the piece unmakeable as designed
   const colliders = [];
   const minWall = d.rule.min_wall;
 
@@ -497,13 +498,17 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
   for (const sc of d.sculpts) {
     const got = sculpts.get(sculptKey(sc));
     if (!got || got.pending) warnings.push(`sculpt ${sc.id}: preparing…`);
-    else if (got.error) warnings.push(`sculpt ${sc.id}: ${got.error}`);
+    else if (got.error) errors.push(`sculpt ${sc.id} could not be used: ${got.error}`);
     else {
       metal.push({ name: `sculpt ${sc.id}`, obj: sc.id, geometry: got.geometry, sculpt: true });
       sculptInfo[sc.id] = got.info;
     }
   }
-  if (!hasBand && (d.paint.length || d.strokes.length || d.regions.length)) warnings.push("pavé on the band needs a band: shank profile is none");
+  if (!hasBand) {
+    const onBand = [...d.accents.map((a) => `accent ${a.id}`), ...d.strokes.map((x) => `stroke ${x.id}`), ...d.regions.map((x) => `region ${x.id}`), ...(d.paint.length ? ["brushed pavé"] : [])];
+    if (onBand.length) errors.push(`${onBand.join(", ")} sit${onBand.length === 1 ? "s" : ""} on the band, but shank profile is none: remove ${onBand.length === 1 ? "it" : "them"} or give the ring a band`);
+    if (!d.sculpts.length) errors.push("Nothing goes round the finger: shank profile is none and there is no sculpt");
+  }
   const gridOf = (scId) => {
     const sc = d.sculpts.find((x) => x.id === scId);
     const got = sc && sculpts.get(sculptKey(sc));
@@ -682,5 +687,5 @@ export function build(d, { quality = "standard", sculpts = new Map() } = {}) {
     }
   } else if (d.pave.dia === "auto") paveDia = null;
 
-  return { metal, stones, geom, design: d, paveDia, warnings, colliders, sculptInfo, hasBand };
+  return { metal, stones, geom, design: d, paveDia, warnings, errors, colliders, sculptInfo, hasBand };
 }

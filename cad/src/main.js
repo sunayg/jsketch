@@ -593,6 +593,7 @@ function renderSheet(r) {
     row(r.metal.exact ? "Weight (exact)" : "Weight (estimate)", el("strong", { textContent: `${fx(weightIn(r.metal.weightG, prefs.weight), prefs.weight === "g" ? 2 : 3)} ${WEIGHT[prefs.weight].label}` })),
     row("Inside diameter", el("span", { textContent: `${fx(lengthIn(r.innerDiameter, prefs.length), prefs.length === "in" ? 3 : 2)} ${prefs.length}` })),
     ...(r.minWall.shank != null ? [row("Thinnest band wall", el("span", { textContent: `${fx(lengthIn(r.minWall.shank, prefs.length), prefs.length === "in" ? 3 : 2)} ${prefs.length}` }))] : []),
+    ...Object.entries(r.sculpts || {}).filter(([, i]) => i.boreMeasured && i.boreMeasured > r.innerDiameter * 0.5).map(([id, i]) => row(`Bore, ${id} (measured)`, el("span", { textContent: `${fx(lengthIn(i.boreMeasured, prefs.length), prefs.length === "in" ? 3 : 2)} ${prefs.length}` }))),
     ...Object.entries(r.sculpts || {}).filter(([, i]) => i.minWall).map(([id, i]) => row(`Thinnest wall, ${id}`, el("span", { textContent: `${fx(lengthIn(i.minWall.mm, prefs.length), prefs.length === "in" ? 3 : 2)} ${prefs.length}` }))),
     ...(r.centre ? [row("Centre stone", el("span", { textContent: `${r.centre.cut} ${fx(r.centre.dia, 1)}×${fx(r.centre.length, 1)} mm` }))] : []),
     row("Stones", el("span", { textContent: `${r.stoneCount} · ${fx(gemIn(r.totalCt, prefs.gem), gd)} ${GEM_WEIGHT[prefs.gem].label} est.` })),

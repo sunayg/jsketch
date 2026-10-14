@@ -114,6 +114,26 @@ export function report(model, exact = null) {
   const floating = exact ? [] : model.metal.filter((_, i) => !reached.has(i));
   for (const m of floating) checks.push({ level: "error", text: `${m.name} is not connected to the rest of the metal` });
 
+  // sculpts: does one go round the finger, and does any reach into the hole
+  const SECT = 72;
+  let encircled = model.hasBand !== false;
+  for (const m of model.metal.filter((x) => x.sculpt)) {
+    const p = m.geometry.attributes.position.array;
+    const seen = new Uint8Array(SECT);
+    let rmin = Infinity;
+    for (let i = 0; i < p.length; i += 3) {
+      const r = Math.hypot(p[i], p[i + 1]);
+      if (r < rmin) rmin = r;
+      seen[Math.min(SECT - 1, Math.floor(((Math.atan2(p[i + 1], p[i]) + Math.PI) / (2 * Math.PI)) * SECT))] = 1;
+    }
+    if (seen.reduce((a, v) => a + v, 0) >= SECT * 0.9 && rmin > ri * 0.5) encircled = true;
+    const info = model.sculptInfo?.[m.obj];
+    if (info) info.boreMeasured = +(2 * rmin).toFixed(3);
+    if (rmin < ri - 0.15) checks.push({ level: rmin < ri * 0.5 ? "error" : "warn", text: `${m.name} reaches ${(ri - rmin).toFixed(2)} mm into the finger hole (${(2 * rmin).toFixed(2)} mm across at its narrowest, against ${(2 * ri).toFixed(2)} mm)` });
+  }
+  if (!encircled && model.metal.some((x) => x.sculpt)) checks.push({ level: "error", text: "No metal goes round the finger: shank profile is none and no sculpt surrounds the finger hole (use fit=ring)" });
+  for (const e of model.errors || []) checks.push({ level: "error", text: e });
+
   // stones that run into the metal of another setting
   let hits = 0;
   for (const st of model.stones) {
@@ -169,7 +189,8 @@ export function report(model, exact = null) {
       checks.push({ level: "error", text: `sculpt ${id}: wall is ${info.minWall.mm.toFixed(2)} mm at (${info.minWall.at.map((v) => v.toFixed(2)).join(", ")}), under the ${minWall} mm minimum; thicken it or hollow less` });
     }
     if (info.unscaled) checks.push({ level: "warn", text: `sculpt ${id} is ${Math.max(...info.sizeBeforeRepair).toFixed(1)} mm across, which does not look like millimetres: use fit=ring or set scale=` });
-    if (info.removedPieces?.length) checks.push({ level: "info", text: `sculpt ${id}: removed ${info.removedPieces.length} loose piece(s)` });
+    if (info.removedPieces) checks.push({ level: "info", text: `sculpt ${id}: removed ${info.removedPieces} loose piece(s), ${info.removedVolume} mm³ in all` });
+    if (info.autoClose) checks.push({ level: "info", text: `sculpt ${id}: holes in the mesh were closed (close=${info.autoClose}); set close= to change it` });
     if (info.notWatertight && info.method === "voxel") checks.push({ level: "info", text: `sculpt ${id} was not watertight; rebuilt as a solid (voxel ${info.voxel.toFixed(2)} mm)` });
   }
   if (!checks.some((c) => c.level === "error" || c.level === "warn")) checks.unshift({ level: "ok", text: "No warnings" });

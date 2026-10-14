@@ -107,11 +107,18 @@ export function solidify(model, { seats = true } = {}) {
     }
     // Booleans can leave dust-sized fragments where cuts graze thin parts;
     // drop them, and keep any real separate piece so it can be reported.
+    // A hollow piece decomposes into its body plus inner cavities (negative
+    // volume): cavities are always kept; only tiny positive bodies are dropped.
     const SLIVER = 0.05; // mm³
     const all = solid.decompose().map((m) => track(m));
-    const kept = all.filter((m) => m.volume() >= SLIVER);
-    const slivers = all.length - kept.length;
-    if (slivers) solid = track(Manifold.compose(kept));
+    const bodies = all.filter((m) => m.volume() >= SLIVER);
+    const cavities = all.filter((m) => m.volume() < 0);
+    const slivers = all.length - bodies.length - cavities.length;
+    if (slivers) solid = track(Manifold.compose([...bodies, ...cavities]));
+    // merge vertices closer than 1 µm (slicers weld at about that tolerance)
+    const clean = track(solid.simplify(0.001));
+    if (Math.abs(clean.volume() - solid.volume()) < 1e-3 * Math.max(1, Math.abs(solid.volume()))) solid = clean;
+    const kept = bodies;
     const pieces = kept.map((piece) => {
       const box = piece.boundingBox();
       return { volume: piece.volume(), min: box.min, max: box.max, center: box.min.map((v, i) => (v + box.max[i]) / 2) };
