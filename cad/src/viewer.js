@@ -3,8 +3,9 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
 import { OBJExporter } from "three/examples/jsm/exporters/OBJExporter.js";
-import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { stoneGeometry } from "./gems.js";
+import { stoneMatrix } from "./build.js";
+import { bakeGeometry, to3mf } from "./export.js";
 import { METALS } from "./script.js";
 
 const GEM_COLOR = { centre: "#f4fbff", halo: "#eaf6ff", pave: "#eaf6ff" };
@@ -64,8 +65,6 @@ export function createViewer(container, { onPaint }) {
     for (const g of stoneGeos.values()) g.dispose();
     stoneGeos.clear();
   };
-
-  const stoneMatrix = (s) => new THREE.Matrix4().compose(s.pos, new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.normal), new THREE.Vector3(1, 1, 1));
 
   function setModel(m) {
     dispose();
@@ -152,24 +151,21 @@ export function createViewer(container, { onPaint }) {
   };
   loop();
 
-  // ---- exports (bake instanced stones into plain meshes, units = mm) ----
-  const stoneMeshes = () =>
-    model.stones.map((s) => {
-      const g = geoFor(s.cut, s.dia).clone().applyMatrix4(stoneMatrix(s));
-      return new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: GEM_COLOR[s.role] }));
-    });
-  const metalMesh = () => {
-    const merged = mergeGeometries(model.metal.map((p) => (p.geometry.index ? p.geometry.toNonIndexed() : p.geometry)));
-    return new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ color: METALS[model.design.ring.metal].color, metalness: 1, roughness: 0.25 }));
+  // ---- exports: take a model (rebuilt at the chosen quality) and bake it to mm geometry ----
+  const toBlob = (data, type) => new Blob([data], { type });
+  const meshOf = (m, which) => {
+    const g = bakeGeometry(m, which);
+    return g && new THREE.Mesh(g, new THREE.MeshStandardMaterial(which === "stones" ? { color: "#eaf6ff" } : { color: METALS[m.design.ring.metal].color, metalness: 1, roughness: 0.25 }));
   };
-  const stonesMesh = () => new THREE.Mesh(mergeGeometries(stoneMeshes().map((m) => m.geometry)), new THREE.MeshStandardMaterial({ color: "#eaf6ff" }));
-  const all = () => {
+  const all = (m) => {
     const g = new THREE.Group();
-    g.add(metalMesh(), ...stoneMeshes());
+    for (const w of ["metal", "stones"]) {
+      const mesh = meshOf(m, w);
+      if (mesh) g.add(mesh);
+    }
     g.updateMatrixWorld(true);
     return g;
   };
-  const toBlob = (data, type) => new Blob([data], { type });
 
   return {
     setModel,
@@ -181,10 +177,11 @@ export function createViewer(container, { onPaint }) {
     setBrush(r) {
       brushR = r;
     },
-    exportStl: (which) => toBlob(new STLExporter().parse(which === "stones" ? stonesMesh() : metalMesh(), { binary: true }), "model/stl"),
-    exportObj: () => toBlob(new OBJExporter().parse(all()), "text/plain"),
-    exportGlb: () =>
-      new Promise((resolve, reject) => new GLTFExporter().parse(all(), (b) => resolve(toBlob(b, "model/gltf-binary")), reject, { binary: true })),
+    exportStl: (m, which) => toBlob(new STLExporter().parse(meshOf(m, which) ?? new THREE.Mesh(), { binary: true }), "model/stl"),
+    exportObj: (m) => toBlob(new OBJExporter().parse(all(m)), "text/plain"),
+    export3mf: (m) => toBlob(to3mf(m), "model/3mf"),
+    exportGlb: (m) =>
+      new Promise((resolve, reject) => new GLTFExporter().parse(all(m), (b) => resolve(toBlob(b, "model/gltf-binary")), reject, { binary: true })),
     screenshot: () => renderer.domElement.toDataURL("image/png"),
     destroy() {
       ro.disconnect();

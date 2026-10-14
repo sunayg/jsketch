@@ -2,9 +2,13 @@
 // stone list. No DOM or renderer needed, so the CLI and tests use it too.
 import * as THREE from "three";
 import { parseSize } from "./sizes.js";
-import { CUTS, outline, spaceAlong } from "./gems.js";
+import { CUTS, MELEE_SIZES, outline, spaceAlong } from "./gems.js";
 
 const UP = new THREE.Vector3(0, 1, 0);
+
+// World transform of a stone: girdle centre at pos, table facing along normal.
+export const stoneMatrix = (s) =>
+  new THREE.Matrix4().compose(s.pos, new THREE.Quaternion().setFromUnitVectors(UP, s.normal), new THREE.Vector3(1, 1, 1));
 const TAU = Math.PI * 2;
 
 // Cross-section of the shank in (radius, axial) coordinates.
@@ -67,9 +71,9 @@ function rod(a, b, r) {
 }
 
 // Hex lattice in (arc length s, axial w) on the shank's outer surface.
-function paveStones(d, geom) {
+function paveStones(d, geom, dia) {
   const { ro, width, circumference } = geom;
-  const { dia, gap } = d.pave;
+  const { gap } = d.pave;
   const pitch = dia + gap;
   const rowH = pitch * Math.sqrt(3) / 2;
   const centre = new THREE.Vector3(0, ro, 0);
@@ -101,9 +105,29 @@ function paveStones(d, geom) {
   return out;
 }
 
-export function build(d) {
+// Auto size: among stocked melee sizes in [min, max], pick the one that covers
+// the most painted area (stones * dia^2); ties go to the larger stone.
+function autoPave(d, geom) {
+  const lo = d.pave.min ?? 0.9;
+  const hi = d.pave.max ?? 2;
+  let best = null;
+  for (const dia of MELEE_SIZES.filter((x) => x >= lo - 1e-9 && x <= hi + 1e-9)) {
+    const stones = paveStones(d, geom, dia);
+    const covered = stones.length * dia * dia;
+    if (!best || covered > best.covered + 1e-9 || (Math.abs(covered - best.covered) <= 1e-9 && dia > best.dia)) {
+      best = { dia, stones, covered };
+    }
+  }
+  return best;
+}
+
+const QUALITY = { draft: 64, standard: 160, fine: 320 };
+
+export function build(d, { quality = "standard" } = {}) {
   const size = parseSize(d.ring.size);
-  const ri = size.innerDiameter / 2;
+  const diameter = d.ring.diameter ?? size.innerDiameter;
+  const ri = diameter / 2;
+  const seg = QUALITY[quality] ?? QUALITY.standard;
   const t = d.shank.thickness;
   const ro = ri + t;
   const w = d.shank.width;
@@ -113,7 +137,7 @@ export function build(d) {
   // shank: revolve profile around Z, then stand the ring up
   const lathe = new THREE.LatheGeometry(
     shankProfile(ri, ro, w, d.shank.profile).map(([r, y]) => new THREE.Vector2(r, y)),
-    160,
+    seg,
   );
   lathe.rotateX(Math.PI / 2);
   metal.push({ name: "shank", geometry: fixWinding(lathe) });
@@ -179,7 +203,14 @@ export function build(d) {
     metal.push({ name: "halo-plate", geometry: fixWinding(plate), thickness: plateT });
   }
 
-  const geom = { ri, ro, width: w, circumference: TAU * ro, innerDiameter: size.innerDiameter };
-  stones.push(...paveStones(d, geom));
-  return { metal, stones, geom, design: d };
+  const geom = { ri, ro, width: w, circumference: TAU * ro, innerDiameter: diameter };
+  let paveDia = d.pave.dia;
+  if (d.pave.dia === "auto") {
+    const best = d.paint.length ? autoPave(d, geom) : null;
+    paveDia = best ? best.dia : null;
+    if (best) stones.push(...best.stones);
+  } else {
+    stones.push(...paveStones(d, geom, d.pave.dia));
+  }
+  return { metal, stones, geom, design: d, paveDia };
 }

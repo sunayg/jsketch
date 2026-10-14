@@ -1,6 +1,6 @@
 # JewelScript CAD
 
-A browser jewelry CAD where **the design is a short text file**. Every UI action writes a line of script and editing the text rebuilds the model. It is an original implementation of the ideas described in `diatech-reverse-engineering.md`; the language and geometry are its own, not a copy of any product's.
+A browser jewelry CAD where **the design is a short text file**. Every UI action writes a line of script and editing the text rebuilds the model. It is an original implementation of the ideas described in `diatech-reverse-engineering.md` and `diatech-study-notes.md`; the language and geometry are its own, not a copy of any product's.
 
 ```
 design "Halo ring"
@@ -24,19 +24,22 @@ npm test             # all tests (design logic + CAD core)
 
 ## What it does
 
+- **Variables and expressions**: `var band=1.8`, then `thickness={band}` or `{band*2}` (plus, minus, times, divide, parentheses; no code execution). Fields edited in the panel drop their expression, others keep theirs.
+
 - **Text is the model**: edit the script (errors are shown per line and the last good model stays) or use the parameter panel, which writes canonical script back.
-- **Ring sizes** US, EU and JP, converted to inner diameter in mm.
+- **Ring sizes** US, EU, DE, IT and JP, or a custom `diameter=`.
 - **Stones are real objects** sized by their girdle: round, oval, marquise, pear, princess, cushion, emerald. Prong settings place prongs on the girdle outline; bezels follow it; halos follow the cut's outline with evenly spaced stones.
+- **Auto-sized pavé**: `pave dia=auto min=0.9 max=2` picks the stocked melee size that covers the most painted area.
 - **Paint-to-fill pavé**: turn on *Paint pavé* and drag over the band. Strokes become `paint` lines and a hex lattice of melee fills them, staying on the band and clear of the head.
-- **Tech sheet**: metal weight from the real mesh volume and typical alloy densities, stone list with estimated diamond carats, inside diameter.
-- **Checks**: minimum wall (user-set rule), unstocked melee sizes, overlapping stones.
-- **Export**: STL (metal, stones), OBJ, GLB, in millimetres.
+- **Tech sheet**: metal weight from the real mesh volume and typical alloy densities (17 alloys, `density=` override), stone list with estimated diamond carats, inside diameter; units g/dwt/ozt/tola, ct/mg/pts, mm/cm/in.
+- **Checks**: minimum wall with coordinates, stones intruding into the finger bore, unstocked melee sizes, overlapping stones, and a stale banner while the script has errors.
+- **Export**: STL (metal, stones), 3MF, OBJ, GLB, in millimetres, at draft/standard/fine quality, with `rule shrink=2` scaling by casting shrinkage.
 - **Headless for agents**: `node cad/cli.js validate design.jws` and `node cad/cli.js measure design.jws` print JSON (errors with line numbers, or the full report) so an AI assistant can write, check and measure designs without the UI.
 
 ## Limits (deliberate scope)
 
 - Approximate cuts and settings: no heart, asscher, radiant, baguette or trillion; settings are prong and bezel only. Halos offset the outline by scaling, not an exact offset curve.
 - Weight ignores stone seats and uses typical alloy densities. Carats are diamond estimates.
-- No 3MF, size-run export, STEP/3DM/JCD import, booleans, sweeps, engraving or mesh tools.
+- No size-run export, STEP/3DM/JCD import, booleans, sweeps, engraving or mesh tools. No named objects (so no mirrored shoulders or components), and no thickness heatmap.
 - No MCP server; the CLI is the agent interface.
-- UK ring sizes are not included.
+- UK, HK and MATRIX ring sizes are not included.

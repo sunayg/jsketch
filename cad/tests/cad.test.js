@@ -1,7 +1,13 @@
 import test from "node:test";
 import * as THREE from "three";
 import assert from "node:assert/strict";
-import { parse, serialize, defaultDesign, TEMPLATES } from "../src/script.js";
+import { parse, serialize, defaultDesign, setField, TEMPLATES } from "../src/script.js";
+import { evalExpr } from "../src/expr.js";
+import { weightIn, gemIn, lengthIn } from "../src/units.js";
+import { bakeGeometry, to3mf } from "../src/export.js";
+import { crc32 } from "../src/zip.js";
+import { crc32 as nodeCrc32 } from "node:zlib";
+import { signedVolume as vol } from "../src/build.js";
 import { parseSize } from "../src/sizes.js";
 import { build, signedVolume } from "../src/build.js";
 import { report } from "../src/report.js";
@@ -65,7 +71,7 @@ test("min wall rule flags a thin shank and unstocked melee", () => {
   d.paint.push({ s: 20, w: 0, r: 2 });
   const r = report(build(d));
   assert.equal(r.ok, false);
-  assert.ok(r.checks.some((c) => /minimum wall/.test(c.text)));
+  assert.ok(r.checks.some((c) => /wall is 0\.60 mm at \(.*\), under the 0\.8 mm minimum/.test(c.text)));
   assert.ok(r.checks.some((c) => /stocked/.test(c.text)));
 });
 
@@ -76,4 +82,116 @@ test("unpainted design has no pavé; pavé keeps clear of the head", () => {
   for (const s of m.stones.filter((x) => x.role === "pave")) {
     assert.ok(s.pos.distanceTo(new THREE.Vector3(0, m.geom.ro, 0)) >= d.stone.dia * 0.3);
   }
+});
+
+test("expressions: arithmetic, variables, errors", () => {
+  assert.equal(evalExpr("1+2*3"), 7);
+  assert.equal(evalExpr("(1+2)*3 - -2"), 11);
+  assert.equal(evalExpr("a/2", { a: 5 }), 2.5);
+  assert.throws(() => evalExpr("1/0"), /zero/);
+  assert.throws(() => evalExpr("zz+1"), /Unknown variable/);
+  assert.throws(() => evalExpr("process.exit()"), /Cannot read|Unknown/);
+  assert.throws(() => evalExpr("2 3"), /Unexpected/);
+});
+
+test("variables drive fields and survive a round trip until a field is edited", () => {
+  const d = TEMPLATES["Parametric halo"]();
+  assert.equal(d.shank.width, 3);
+  assert.equal(d.stone.dia, 6);
+  assert.equal(d.ring.diameter, 17.35);
+  const text = serialize(d);
+  assert.match(text, /var stone_d=6/);
+  assert.match(text, /shank width=\{stone_d\/2\}/);
+  assert.deepEqual(parse(text).design, d);
+  setField(d, "stone", "dia", 7);
+  assert.match(serialize(d), /stone cut=round dia=7 /); // expression dropped for the edited field
+  assert.match(serialize(d), /shank width=\{stone_d\/2\}/); // others keep theirs
+  const bad = parse("var a=1\nshank width={b}\npaint s={a}");
+  assert.deepEqual(bad.errors.map((e) => e.line), [2, 3]);
+});
+
+test("custom ring diameter and density override", () => {
+  const d = defaultDesign();
+  d.ring.diameter = 18;
+  d.ring.density = 10;
+  const m = build(d);
+  assert.equal(m.geom.innerDiameter, 18);
+  const base = defaultDesign();
+  const r1 = report(build(base));
+  const r2 = report(m);
+  assert.equal(r2.metal.density, 10);
+  assert.ok(r2.metal.weightG < r1.metal.weightG); // lower density, despite a slightly larger ring
+});
+
+test("sizes: DE and IT", () => {
+  assert.ok(Math.abs(parseSize("DE54").innerDiameter - 54 / Math.PI) < 1e-9);
+  assert.ok(Math.abs(parseSize("IT14").innerDiameter - 54 / Math.PI) < 1e-9);
+  assert.equal(parse("ring size=IT99").errors.length, 1);
+});
+
+test("auto pavé picks a stocked size and fills the painted area", () => {
+  const d = TEMPLATES["Pavé band"]();
+  d.pave = { dia: "auto", gap: 0.15, min: 0.9, max: 1.7 };
+  const m = build(d);
+  assert.ok([0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.7].includes(m.paveDia), String(m.paveDia));
+  const n = m.stones.filter((s) => s.role === "pave").length;
+  assert.ok(n > 20);
+  assert.ok(m.stones.filter((s) => s.role === "pave").every((s) => s.dia === m.paveDia));
+  const r = report(m);
+  assert.equal(r.checks.some((c) => /stocked/.test(c.text)), false);
+  // nothing painted: auto has no size and says so
+  const empty = report(build({ ...defaultDesign(), pave: { dia: "auto", gap: 0.15 } }));
+  assert.equal(empty.paveDia, null);
+  assert.ok(empty.checks.some((c) => /no painted area/.test(c.text)));
+});
+
+test("stones in the finger bore are flagged", () => {
+  const m = build(defaultDesign());
+  m.stones.push({ cut: "round", dia: 1.3, role: "pave", pos: new THREE.Vector3(0, -m.geom.ri + 0.2, 0), normal: new THREE.Vector3(0, 1, 0) });
+  assert.ok(report(m).checks.some((c) => /finger bore/.test(c.text)));
+});
+
+test("units", () => {
+  assert.ok(Math.abs(weightIn(31.1034768, "ozt") - 1) < 1e-9);
+  assert.ok(Math.abs(weightIn(1.55517384, "dwt") - 1) < 1e-9);
+  assert.equal(gemIn(1, "mg"), 200);
+  assert.equal(gemIn(1, "pts"), 100);
+  assert.equal(lengthIn(25.4, "in"), 1);
+});
+
+test("shrinkage scales exports uniformly", () => {
+  const m = build(defaultDesign());
+  const v0 = Math.abs(vol(bakeGeometry(m, "metal", 0)));
+  const v2 = Math.abs(vol(bakeGeometry(m, "metal", 2)));
+  assert.ok(Math.abs(v2 / v0 - 1.02 ** 3) < 1e-6);
+});
+
+test("3MF package is a valid zip with a millimetre model", () => {
+  const m = build(TEMPLATES["Halo ring"]());
+  const zip = to3mf(m, 0);
+  const dv = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+  assert.equal(dv.getUint32(0, true), 0x04034b50);
+  // walk local headers; check every CRC against Node's implementation
+  let off = 0;
+  const names = [];
+  while (dv.getUint32(off, true) === 0x04034b50) {
+    const size = dv.getUint32(off + 18, true);
+    const nl = dv.getUint16(off + 26, true);
+    const name = new TextDecoder().decode(zip.subarray(off + 30, off + 30 + nl));
+    const data = zip.subarray(off + 30 + nl, off + 30 + nl + size);
+    assert.equal(dv.getUint32(off + 14, true), nodeCrc32(data), name);
+    assert.equal(crc32(data), nodeCrc32(data));
+    names.push(name);
+    off += 30 + nl + size;
+  }
+  assert.deepEqual(names, ["[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model"]);
+  assert.equal(dv.getUint32(off, true), 0x02014b50); // central directory follows
+  const model = new TextDecoder().decode(zip).match(/<model[\s\S]*<\/model>/)[0];
+  assert.match(model, /unit="millimeter"/);
+  assert.equal((model.match(/<object /g) || []).length, 2);
+  const tri = (model.match(/<triangle /g) || []).length;
+  assert.ok(tri > 1000);
+  // every triangle index is in range
+  const nv = (model.match(/<vertex /g) || []).length;
+  for (const mm of model.matchAll(/v1="(\d+)" v2="(\d+)" v3="(\d+)"/g)) assert.ok(+mm[1] < nv && +mm[2] < nv && +mm[3] < nv);
 });

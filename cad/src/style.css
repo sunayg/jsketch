@@ -39,3 +39,6 @@ td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
   #script { min-height:160px; }
 }
 .note { color:var(--muted); font-size:11px; }
+.stale-note { display:none; margin:0 0 6px; padding:4px 8px; border:1px solid var(--warn); color:var(--warn); border-radius:6px; font-size:12px; }
+#sheet.stale .stale-note { display:block; }
+header label { display:flex; gap:4px; align-items:center; color:var(--muted); }

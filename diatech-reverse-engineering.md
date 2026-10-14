@@ -11,7 +11,7 @@ Browser-based parametric jewelry CAD for rings, pendants and earrings, aimed at 
 SvelteKit (static prerendered marketing pages, `x-sveltekit-page`), Tailwind-style utility classes, nginx on Ubuntu. Strict CSP with `wasm-unsafe-eval` (so the geometry kernel is probably WebAssembly), `worker-src blob:`, and COOP/COEP headers (cross-origin isolation, usually for threaded WASM/SharedArrayBuffer). Images from `cdn.diatech.ai`. Installable PWA (`manifest.webmanifest`). Dark/light theme.
 
 ## Core idea
-A design is a short, readable text file in a language called **DiaScript** (`.ds`), with dimensions in millimetres. Every UI action writes a line of script, and editing the text rebuilds the model. This makes designs diffable, versionable and writable by language models. The script compiles to exact geometry plus measurements.
+A design is a readable text document called **DiaScript** (`.ds` extension), with dimensions in millimetres. *(Correction: the public site only says "short, readable text". A signed-in study found that the editor document is XML, not a line-based file; see `diatech-study-notes.md`.)* Every UI action writes a line of script, and editing the text rebuilds the model. This makes designs diffable, versionable and writable by language models. The script compiles to exact geometry plus measurements.
 
 ## Feature list (from the site)
 - **Parametric rebuild**: change ring size, stone count or wall thickness and the whole piece rebuilds (the site's demo shows about 0.4 s).
@@ -33,3 +33,12 @@ The DiaScript grammar, the geometry kernel, the exact packing and setting algori
 
 ## Build plan used for the clone
 See `cad/README.md`. An original text-defined parametric ring CAD: own language (JewelScript), own geometry, own checks. It covers the core idea (text file is the model), ring sizes, girdle-based prong settings, halos that follow the cut outline, paint-to-fill pavé, alloy weights, stone list and carats, wall/fit checks, STL/OBJ/GLB export, and a headless CLI for AI agents. It does not copy Diatech code, branding or assets, and its output is not interchangeable with DiaScript.
+
+## Correction after the signed-in study
+`diatech-study-notes.md` (written from the signed-in editor, as a user) shows the document is **XML**: a `<design>` root with element tags, `id` attributes, `<var>` variables, `{expr}` expressions, `<import src="std:*.ds">` libraries, `<gem>`, `<setting>`, `<repeat>`, `<op>`, `<bool expr="a + b - c">` and `<output>`. The public pages implied a line-based file; that was wrong. JewelScript deliberately keeps its own line-based language and does not try to read or write Diatech files. Compatibility would mean copying their format, which this project does not do.
+
+## Gaps closed in `cad/` since the study
+Variables and `{expr}` expressions; auto-sized pavé (largest-coverage stocked melee in a range); wall findings with coordinates, plus a finger-bore check and a stale-state banner; tech-sheet units (g/dwt/ozt/tola, ct/mg/pts, mm/cm/in), 17 alloys with density override; export quality (draft/standard/fine), casting shrinkage %, 3MF; DE and IT ring sizes and custom diameter.
+
+## Still open (ranked by the study)
+Id-addressed objects and boolean expressions (so mirrored shoulders, second stones, components); region/curve pavé with bead sizes and pack-by-count; thickness heatmap and the remaining manufacturability checks (stones no metal holds, open metal); tech sheet views, gem map and print output; more settings (head variants, illusion, channel, microsetting, cutters) and cuts; a templates gallery; inspector, objects tree, snaps, command palette; imports and an agent/MCP interface.
