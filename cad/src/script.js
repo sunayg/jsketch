@@ -34,7 +34,12 @@ export const METALS = {
   copper: { label: "Copper", density: 8.96, color: "#c8744d" },
 };
 export const PROFILES = ["flat", "comfort", "domed"];
-export const SETTINGS = ["prong", "bezel"];
+export const SETTINGS = ["prong", "bezel", "illusion"];
+export const TIPS = ["round", "pointed", "flat", "claw"];
+export const HALO_KINDS = ["single", "double", "hidden"];
+const YESNO = ["yes", "no"];
+// commands that can appear many times, each with a unique id
+export const LISTS = { accent: "accents", stroke: "strokes", region: "regions" };
 
 // command -> { key: [type, min, max] | [enum values] }
 const SCHEMA = {
@@ -42,9 +47,21 @@ const SCHEMA = {
   var: {},
   ring: { size: ["size"], diameter: ["num", 10, 30], metal: [Object.keys(METALS)], density: ["num", 1, 25] },
   shank: { width: ["num", 1, 12], thickness: ["num", 0.4, 5], profile: [PROFILES] },
-  stone: { cut: [Object.keys(CUTS)], dia: ["num", 1, 15], setting: [SETTINGS], prongs: ["num", 3, 8] },
-  halo: { dia: ["num", 0.8, 3], gap: ["num", 0, 1] },
-  pave: { dia: ["numauto", 0.8, 3], gap: ["num", 0, 1], min: ["num", 0.8, 3], max: ["num", 0.8, 3] },
+  stone: { cut: [Object.keys(CUTS)], dia: ["num", 1, 15], setting: [SETTINGS], prongs: ["num", 3, 8], tip: [TIPS] },
+  halo: { dia: ["num", 0.8, 3], gap: ["num", 0, 1], kind: [HALO_KINDS] },
+  pave: { dia: ["numauto", 0.8, 3], gap: ["num", 0, 1], min: ["num", 0.8, 3], max: ["num", 0.8, 3], bead: ["num", 0, 0.8] },
+  accent: {
+    id: ["id"], cut: [Object.keys(CUTS)], dia: ["num", 1, 8], s: ["num", -200, 200], w: ["num", -10, 10],
+    setting: [["bezel", "prong", "flush"]], prongs: ["num", 3, 6], tip: [TIPS], mirror: [YESNO],
+  },
+  stroke: {
+    id: ["id"], pts: ["pts"], dia: ["num", 0.8, 3], count: ["num", 1, 300], gap: ["num", 0, 1],
+    setting: [["bead", "channel", "none"]], bead: ["num", 0.2, 0.8], mirror: [YESNO],
+  },
+  region: {
+    id: ["id"], pts: ["pts"], dia: ["numauto", 0.8, 3], gap: ["num", 0, 1], min: ["num", 0.8, 3], max: ["num", 0.8, 3],
+    setting: [["bead", "none"]], bead: ["num", 0.2, 0.8], mirror: [YESNO],
+  },
   paint: { s: ["num", -200, 200], w: ["num", -10, 10], r: ["num", 0.3, 10] },
   rule: { min_wall: ["num", 0, 3], shrink: ["num", 0, 5] },
 };
@@ -58,10 +75,31 @@ export const defaultDesign = () => ({
   shank: { width: 3, thickness: 1.8, profile: "comfort" },
   stone: { cut: "round", dia: 6.5, setting: "prong", prongs: 4 },
   halo: null,
-  pave: { dia: 1.3, gap: 0.15 },
+  accents: [],
+  strokes: [],
+  regions: [],
+  pave: { dia: 1.3, gap: 0.15, bead: 0.35 },
   paint: [],
   rule: { min_wall: 0.8, shrink: 0 },
 });
+
+const LIST_DEFAULTS = {
+  accent: () => ({ cut: "round", dia: 2, s: 12, w: 0, setting: "bezel", mirror: "no" }),
+  stroke: () => ({ dia: 1.3, gap: 0.15, setting: "bead", bead: 0.35, mirror: "no" }),
+  region: () => ({ dia: 1.3, gap: 0.15, setting: "bead", bead: 0.35, mirror: "no" }),
+};
+
+// "s:w,s:w,…" -> [[s, w], …]
+export const formatPts = (pts) => pts.map(([a, b]) => `${fmt(a)}:${fmt(b)}`).join(",");
+function parsePts(val) {
+  const pts = [];
+  for (const pair of val.split(",")) {
+    const m = /^(-?\d+(?:\.\d+)?):(-?\d+(?:\.\d+)?)$/.exec(pair);
+    if (!m) return null;
+    pts.push([+m[1], +m[2]]);
+  }
+  return pts;
+}
 
 // Split a line into tokens; {…} groups may contain spaces.
 const tokenize = (src) => src.match(/(?:[^\s{]|\{[^}]*\})+/g) || [];
@@ -69,6 +107,7 @@ const tokenize = (src) => src.match(/(?:[^\s{]|\{[^}]*\})+/g) || [];
 export function parse(text) {
   const d = defaultDesign();
   d.paint = [];
+  const ids = new Set();
   const errors = [];
   const seen = new Set();
   const lineOf = {};
@@ -116,8 +155,18 @@ export function parse(text) {
     if (SINGLE.has(cmd) && seen.has(cmd)) return err(line, `"${cmd}" can only appear once`);
     seen.add(cmd);
     lineOf[cmd] = line;
-    const obj = cmd === "halo" ? { dia: 1.2, gap: 0.1 } : { ...(d[cmd] && !Array.isArray(d[cmd]) ? d[cmd] : {}) };
+    const isList = Object.hasOwn(LISTS, cmd);
+    let reported = false;
+    const obj = isList ? { id: undefined, ...LIST_DEFAULTS[cmd]() } : cmd === "halo" ? { dia: 1.2, gap: 0.1 } : { ...(d[cmd] && !Array.isArray(d[cmd]) ? d[cmd] : {}) };
     if (cmd === "paint") Object.assign(obj, { s: 0, w: 0, r: 2 });
+    // where a field's {expr} text is kept: per item for lists, per design otherwise
+    const setExpr = (key, raw) => {
+      if (isList) {
+        if (raw) (obj.exprs ||= {})[key] = raw;
+        else if (obj.exprs) delete obj.exprs[key];
+      } else if (raw) d.exprs[`${cmd}.${key}`] = raw;
+      else delete d.exprs[`${cmd}.${key}`];
+    };
     for (const tok of rest) {
       const eq = tok.indexOf("=");
       if (eq < 1) {
@@ -134,7 +183,7 @@ export function parse(text) {
       if (rule[0] === "num" || rule[0] === "numauto") {
         if (rule[0] === "numauto" && val === "auto") {
           obj[key] = "auto";
-          delete d.exprs[`${cmd}.${key}`];
+          setExpr(key, null);
           continue;
         }
         if (cmd === "paint" && val.startsWith("{")) {
@@ -146,9 +195,20 @@ export function parse(text) {
         else if (r.n < rule[1] || r.n > rule[2]) err(line, `${key} must be between ${rule[1]} and ${rule[2]}`);
         else {
           obj[key] = r.n;
-          if (r.raw) d.exprs[`${cmd}.${key}`] = r.raw;
-          else delete d.exprs[`${cmd}.${key}`];
+          setExpr(key, r.raw);
         }
+      } else if (rule[0] === "id") {
+        if (!/^[A-Za-z_][\w-]*$/.test(val)) (reported = true), err(line, `id "${val}" must start with a letter and use letters, digits, _ or -`);
+        else if (ids.has(val)) (reported = true), err(line, `id "${val}" is already used`);
+        else {
+          ids.add(val);
+          obj.id = val;
+        }
+      } else if (rule[0] === "pts") {
+        const pts = parsePts(val);
+        if (!pts) (reported = true), err(line, "pts must look like s:w,s:w (numbers in mm)");
+        else if (pts.some(([a, b]) => Math.abs(a) > 200 || Math.abs(b) > 10)) (reported = true), err(line, "pts out of range (s within ±200, w within ±10)");
+        else obj.pts = pts;
       } else if (rule[0] === "size") {
         const s = parseSize(val);
         if (!s) err(line, `size must look like US7, EU54, DE54, IT14 or JP13`);
@@ -157,7 +217,12 @@ export function parse(text) {
       } else if (rule[0].includes(val)) obj[key] = val;
       else err(line, `${key} must be one of: ${rule[0].join(", ")}`);
     }
-    if (cmd === "paint") d.paint.push(obj);
+    if (isList) {
+      if (obj.id === undefined) return reported ? undefined : err(line, `${cmd} needs an id, e.g. ${cmd} id=${cmd}1`);
+      const need = cmd === "region" ? 3 : cmd === "stroke" ? 2 : 0;
+      if (need && (!obj.pts || obj.pts.length < need)) return reported ? undefined : err(line, `${cmd} needs pts with at least ${need} points`);
+      d[LISTS[cmd]].push(obj);
+    } else if (cmd === "paint") d.paint.push(obj);
     else d[cmd] = obj;
   });
   if (d.pave.min !== undefined && d.pave.max !== undefined && d.pave.min > d.pave.max) {
@@ -166,9 +231,14 @@ export function parse(text) {
   return { design: d, errors };
 }
 
-const fmt = (v) => (typeof v === "number" ? String(Math.round(v * 1000) / 1000) : v);
+function fmt(v) {
+  return typeof v === "number" ? String(Math.round(v * 1000) / 1000) : v;
+}
 const line = (cmd, obj, exprs = {}) =>
-  `${cmd} ${Object.entries(obj).map(([k, v]) => `${k}=${exprs[`${cmd}.${k}`] ?? fmt(v)}`).join(" ")}`;
+  `${cmd} ${Object.entries(obj)
+    .filter(([k, v]) => k !== "exprs" && v !== undefined)
+    .map(([k, v]) => `${k}=${k === "pts" ? formatPts(v) : obj.exprs?.[k] ?? exprs[`${cmd}.${k}`] ?? fmt(v)}`)
+    .join(" ")}`;
 
 // An edited field no longer follows its expression: drop it before serializing.
 export const setField = (d, cmd, key, value) => {
@@ -181,6 +251,7 @@ export function serialize(d) {
   for (const v of d.vars) out.push(`var ${v.name}=${v.raw}`);
   out.push(line("ring", d.ring, d.exprs), line("shank", d.shank, d.exprs), line("stone", d.stone, d.exprs));
   if (d.halo) out.push(line("halo", d.halo, d.exprs));
+  for (const [cmd, key] of Object.entries(LISTS)) for (const o of d[key]) out.push(line(cmd, o));
   out.push(line("pave", d.pave, d.exprs));
   for (const p of d.paint) out.push(line("paint", p));
   out.push(line("rule", d.rule, d.exprs));

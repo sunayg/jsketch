@@ -5,6 +5,7 @@ import { parse, serialize, defaultDesign, setField, TEMPLATES } from "../src/scr
 import { evalExpr } from "../src/expr.js";
 import { weightIn, gemIn, lengthIn } from "../src/units.js";
 import { bakeGeometry, to3mf } from "../src/export.js";
+import { MELEE_SIZES } from "../src/gems.js";
 import { crc32 } from "../src/zip.js";
 import { crc32 as nodeCrc32 } from "node:zlib";
 import { signedVolume as vol } from "../src/build.js";
@@ -71,7 +72,8 @@ test("min wall rule flags a thin shank and unstocked melee", () => {
   d.paint.push({ s: 20, w: 0, r: 2 });
   const r = report(build(d));
   assert.equal(r.ok, false);
-  assert.ok(r.checks.some((c) => /wall is 0\.60 mm at \(.*\), under the 0\.8 mm minimum/.test(c.text)));
+  // a 0.6 mm comfort band is thinnest at its chamfered edge (0.6 - 0.2 mm)
+  assert.ok(r.checks.some((c) => /shank: wall is 0\.40 mm at \(0\.00, -?[\d.]+, -1\.50\), under the 0\.8 mm minimum/.test(c.text)), JSON.stringify(r.checks));
   assert.ok(r.checks.some((c) => /stocked/.test(c.text)));
 });
 
@@ -133,7 +135,7 @@ test("auto pavé picks a stocked size and fills the painted area", () => {
   const d = TEMPLATES["Pavé band"]();
   d.pave = { dia: "auto", gap: 0.15, min: 0.9, max: 1.7 };
   const m = build(d);
-  assert.ok([0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.7].includes(m.paveDia), String(m.paveDia));
+  assert.ok(MELEE_SIZES.includes(m.paveDia) && m.paveDia >= 0.9 && m.paveDia <= 1.7, String(m.paveDia));
   const n = m.stones.filter((s) => s.role === "pave").length;
   assert.ok(n > 20);
   assert.ok(m.stones.filter((s) => s.role === "pave").every((s) => s.dia === m.paveDia));
