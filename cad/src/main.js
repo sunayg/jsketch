@@ -8,13 +8,14 @@ import { createViewer } from "./viewer.js";
 import { DESIGNS, COMPONENTS, search } from "./library.js";
 import { interpret } from "./assistant.js";
 import { techSheetHtml, gemMapSvg } from "./techsheet.js";
-import { sizeRun, sizeRange, bundle, stlBytes } from "./export.js";
+import { sizeRange, bundle, stlBytes, to3mf, glbBytes, objText } from "./export.js";
 import { importFile } from "./importers.js";
 import { parseSize, sizeFromDiameter } from "./sizes.js";
 import { sculptKey } from "./build.js";
 import { putAsset } from "./assets-idb.js";
 import { assetId, readMesh } from "./meshio.js";
 import { innerDiameterOf } from "./sculpts.js";
+import { smoothNormals } from "./geom.js";
 
 const $ = (id) => document.getElementById(id);
 const KEY = "jewelscript.cad.v1"; // last valid script
@@ -87,6 +88,7 @@ function redo() {
   rebuild({ record: false });
 }
 
+const ROLE_LABEL = { centre: "centre", accent: "side", halo: "halo", pave: "brushed pavé", region: "region", stroke: "row", surface: "sculpt pavé" };
 const say = (msg) => ($("hint").textContent = msg);
 
 // ---------- exact solid (Manifold, in a worker) ----------
@@ -147,7 +149,7 @@ function onSculptReady(msg) {
   else {
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(msg.positions, 3));
-    g.computeVertexNormals();
+    smoothNormals(g);
     g.userData.thickness = msg.thickness;
     sculptCache.set(key, { geometry: g, info: msg.info });
     say(`Sculpt ready in ${(msg.info.ms / 1000).toFixed(1)} s (${msg.info.method === "voxel" ? "rebuilt as a solid" : "already a solid"}, ${msg.info.triangles} triangles).`);
@@ -157,12 +159,13 @@ function onSculptReady(msg) {
 if (worker) {
   worker.onmessage = (e) => {
     if (e.data.kind === "sculpt") return onSculptReady(e.data);
+    if (e.data.kind === "export") return exportJobs.get(e.data.id)?.(e.data);
     exactState.busy = false;
     const text = exactState.inflight;
     if (!e.data.error && text === textarea.value && model) {
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(e.data.positions, 3));
-      g.computeVertexNormals();
+      smoothNormals(g);
       model.solidGeometry = g;
       model.exact = e.data.exact;
       exactState.current = text;
@@ -184,6 +187,20 @@ if (worker) {
 function setExactStatus(t) {
   const el = document.getElementById("exact-status");
   if (el) el.textContent = t;
+}
+// Exports run in the worker, with sculpts and the exact solid.
+const exportJobs = new Map();
+let exportSeq = 0;
+function exportInWorker(job) {
+  return new Promise((res, rej) => {
+    const id = ++exportSeq;
+    exportJobs.set(id, (msg) => {
+      exportJobs.delete(id);
+      if (msg.error) rej(new Error(msg.error));
+      else res(msg);
+    });
+    worker.postMessage({ kind: "export", id, ...job });
+  });
 }
 // Resolves once the exact solid for the current script is in (or gives up).
 function ensureExact() {
@@ -513,7 +530,7 @@ function objectEntries() {
   const weight = (obj) => lastReport?.parts.filter((p) => p.obj === obj || p.obj?.startsWith(`${obj}~`)).reduce((a, p) => a + p.weightG, 0) || 0;
   const count = (obj) => model?.stones.filter((s) => s.obj === obj || s.obj?.startsWith(`${obj}~`)).length || 0;
   const out = [
-    { obj: "shank", label: `Shank · ${design.shank.profile} ${design.shank.width}×${design.shank.thickness} mm`, line: n("shank") },
+    ...(design.shank.profile !== "none" ? [{ obj: "shank", label: `Shank · ${design.shank.profile} ${design.shank.width}×${design.shank.thickness} mm`, line: n("shank") }] : []),
     ...(design.stone.setting !== "none" ? [{ obj: "stone", label: `Centre · ${design.stone.cut} ${design.stone.dia} mm, ${design.stone.setting}`, line: n("stone") }] : []),
     ...(design.halo ? [{ obj: "halo", label: `Halo · ${design.halo.kind || "single"}, ${count("halo")} stones`, line: n("halo") }] : []),
   ];
@@ -582,7 +599,7 @@ function renderSheet(r) {
   const gd = GEM_WEIGHT[prefs.gem].digits;
   const table = el("table", {},
     el("tr", {}, el("th", { textContent: "Stone" }), el("th", { className: "n", textContent: "mm" }), el("th", { className: "n", textContent: "qty" }), el("th", { className: "n", textContent: GEM_WEIGHT[prefs.gem].label })),
-    ...r.stones.map((s) => el("tr", {}, el("td", { textContent: `${s.role} ${s.cut}` }), el("td", { className: "n", textContent: fx(s.dia, 2) }), el("td", { className: "n", textContent: s.count }), el("td", { className: "n", textContent: fx(gemIn(s.total, prefs.gem), gd) }))),
+    ...r.stones.map((s) => el("tr", {}, el("td", { textContent: `${ROLE_LABEL[s.role] || s.role} ${s.cut}` }), el("td", { className: "n", textContent: fx(s.dia, 2) }), el("td", { className: "n", textContent: s.count }), el("td", { className: "n", textContent: fx(gemIn(s.total, prefs.gem), gd) }))),
   );
   $("sheet").replaceChildren(
     el("p", { className: "stale-note", textContent: "Stale: the script has errors, so this is the last valid design." }),
@@ -621,7 +638,8 @@ const slug = () => design.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace
 function openExport() {
   if (!needValid()) return;
   const part = $("ex-part");
-  part.replaceChildren(el("option", { value: "", textContent: "Whole piece" }), ...objectEntries().map((e) => el("option", { value: e.obj, textContent: e.label })));
+  const has = (obj) => [...(model?.metal || []), ...(model?.stones || [])].some((x) => String(x.obj).split("~")[0] === obj);
+  part.replaceChildren(el("option", { value: "", textContent: "Whole piece" }), ...objectEntries().filter((e) => has(e.obj)).map((e) => el("option", { value: e.obj, textContent: e.label })));
   $("ex-shrink").value = design.rule.shrink ?? 0;
   updateExportForm();
   $("export-dialog").showModal();
@@ -651,29 +669,31 @@ async function runExport() {
     commit();
   }
   const q = $("ex-quality").value;
-  let m = build(design, { quality: q });
-  // whole-piece metal comes from the exact solid (one watertight shell, seats cut)
-  if (["stl", "3mf", "glb", "obj", "bundle"].includes($("ex-format").value) && !$("ex-part").value) {
-    say("Waiting for the exact solid…");
-    if (q === "standard" && (await ensureExact()) && model?.solidGeometry) m = Object.assign(m, { solidGeometry: model.solidGeometry });
-  }
   const f = $("ex-format").value;
-  const part = $("ex-part").value || undefined;
+  const part = $("ex-part").disabled ? undefined : $("ex-part").value || undefined;
   const suffix = part ? `-${part}` : "";
+  const name = { stl: `${suffix}-metal.stl`, "stl-stones": `${suffix}-stones.stl`, "3mf": ".3mf", glb: ".glb", obj: ".obj", bundle: "-bundle.zip", sizerun: "-size-run.zip" }[f];
+  const type = { stl: "model/stl", "stl-stones": "model/stl", "3mf": "model/3mf", glb: "model/gltf-binary", obj: "text/plain", bundle: "application/zip", sizerun: "application/zip" }[f];
+  const btn = $("ex-go");
   try {
-    if (f === "stl") download(new Blob([stlBytes(m, "metal", { obj: part })], { type: "model/stl" }), `${slug()}${suffix}-metal.stl`);
-    else if (f === "stl-stones") download(new Blob([stlBytes(m, "stones", { obj: part })], { type: "model/stl" }), `${slug()}${suffix}-stones.stl`);
-    else if (f === "3mf") download(viewer.export3mf(m), `${slug()}.3mf`);
-    else if (f === "glb") download(await viewer.exportGlb(m), `${slug()}.glb`);
-    else if (f === "obj") download(viewer.exportObj(m), `${slug()}.obj`);
-    else if (f === "bundle") download(new Blob([bundle(design, m, textarea.value)], { type: "application/zip" }), `${slug()}-bundle.zip`);
-    else if (f === "sizerun") {
-      const from = +$("ex-from").value, to = +$("ex-to").value, step = +$("ex-step").value;
-      download(new Blob([sizeRun(design, sizeRange($("ex-sys").value, from, to, step), q)], { type: "application/zip" }), `${slug()}-size-run.zip`);
+    const sizes = f === "sizerun" ? sizeRange($("ex-sys").value, +$("ex-from").value, +$("ex-to").value, +$("ex-step").value) : undefined;
+    if (btn) btn.disabled = true;
+    say(f === "sizerun" ? `Building ${sizes.length} sizes…` : "Building the export…");
+    let bytes;
+    if (worker) bytes = (await exportInWorker({ text: textarea.value, format: f, quality: q, part, sizes })).bytes;
+    else {
+      // no solid kernel: per-part meshes, without sculpts or size runs
+      if (design.sculpts.length || f === "sizerun") throw new Error("this export needs the solid kernel, which did not load");
+      const m = build(design, { quality: q });
+      bytes = f === "stl" ? stlBytes(m, "metal", { obj: part }) : f === "stl-stones" ? stlBytes(m, "stones", { obj: part }) : f === "3mf" ? to3mf(m) : f === "glb" ? glbBytes(m) : f === "obj" ? objText(m) : bundle(design, m, textarea.value);
     }
-    say(`Exported ${f.toUpperCase()}.`);
+    download(new Blob([bytes], { type }), `${slug()}${name}`);
+    say(`Exported ${f === "sizerun" ? "size run" : f.toUpperCase()}.`);
   } catch (e) {
     say(`Export failed: ${e.message}`);
+    return false;
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -745,13 +765,20 @@ async function addSculpt() {
   if (num("sc-hollow")) sc.hollow = num("sc-hollow");
   if ($("sc-sym").value !== "none") sc.symmetrize = $("sc-sym").value;
   design.sculpts.push(sc);
+  let dropped = 0;
   if ($("sc-whole").checked) {
+    // the sculpt is the whole ring: no band, so nothing that sits on one
     setField(design, "shank", "profile", "none");
     setField(design, "stone", "setting", "none");
+    dropped = design.accents.length + design.strokes.length + design.regions.length + (design.paint.length ? 1 : 0) + (design.halo ? 1 : 0);
     design.halo = null;
+    design.accents = [];
+    design.strokes = [];
+    design.regions = [];
+    design.paint = [];
   }
   commit();
-  say(`Added sculpt ${sc.id}; preparing it (repair and fit can take a few seconds)…`);
+  say(`Added sculpt ${sc.id}; preparing it (repair and fit can take a few seconds)…${dropped ? ` Removed ${dropped} band object(s) that need a band (Undo brings them back).` : ""}`);
 }
 
 // A component's lines merged into the script: a halo (or other single
@@ -771,7 +798,12 @@ function insertComponent(componentText) {
         let n = 2;
         while (taken.has(`${idm[1]}${n}`)) n++;
         lines[i] = lines[i].replace(`id=${idm[1]}`, `id=${idm[1]}${n}`);
-        notes.push(`named it ${idm[1]}${n}`);
+        // a second copy goes further along the band, not on top of the first
+        const shift = 3 * (n - 1);
+        lines[i] = lines[i]
+          .replace(/\bs=(-?\d+(?:\.\d+)?)\b/, (_, v) => `s=${+(+v + Math.sign(+v || 1) * shift).toFixed(2)}`)
+          .replace(/\bpts=(\S+)/, (_, pts) => `pts=${pts.split(",").map((p) => p.split(":").map((c, k) => (k === 0 ? +(+c + shift).toFixed(2) : c)).join(":")).join(",")}`);
+        notes.push(`named it ${idm[1]}${n} and moved it ${shift} mm along the band`);
       }
     }
   }
@@ -981,6 +1013,8 @@ $("import").addEventListener("change", async (e) => {
   const f = e.target.files[0];
   e.target.value = "";
   if (!f) return;
+  say(`Importing ${f.name}…`);
+  await new Promise((r) => setTimeout(r, 0)); // let the message paint first
   try {
     const r = await importFile(f, design);
     if (r.kind === "script") {

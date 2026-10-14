@@ -5,11 +5,11 @@ import { report } from "../src/report.js";
 import { CUTS, MELEE_SIZES } from "../src/gems.js";
 import { DESIGNS, COMPONENTS, search } from "../src/library.js";
 import { interpret } from "../src/assistant.js";
-import { stlBytes, to3mf, bundle, sizeRun, sizeRange, glbBytes, objText } from "../src/export.js";
+import { sizeRange } from "../src/export.js";
+import { compileDesign, exportDesign, QUALITIES } from "../src/exporter.js";
 import { mergeText } from "../src/script.js";
 import { renderPng } from "./render.js";
-import { initKernel, solidify, toGeometry } from "../src/kernel.js";
-import { resolveSculpts } from "../src/sculpts.js";
+import { initKernel } from "../src/kernel.js";
 import { readMesh, assetId } from "../src/meshio.js";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { resolve, join, extname, isAbsolute } from "node:path";
@@ -23,8 +23,11 @@ export async function loadAsset(src, baseDir) {
     const f = files.find((n) => n.startsWith(src + "."));
     return f ? { bytes: new Uint8Array(await readFile(join(ASSETS, f))), ext: extname(f).slice(1) } : null;
   }
+  // a file name, or a path inside the script's folder or the assets folder;
+  // never somewhere else on the disk
+  if (typeof src !== "string" || isAbsolute(src) || src.split(/[\\/]/).includes("..")) return null;
   for (const dir of [baseDir, ASSETS].filter(Boolean)) {
-    const path = isAbsolute(src) ? src : join(dir, src);
+    const path = join(dir, src);
     try {
       return { bytes: new Uint8Array(await readFile(path)), ext: extname(path).slice(1) };
     } catch {}
@@ -34,9 +37,12 @@ export async function loadAsset(src, baseDir) {
 
 // Copy a mesh into the assets folder; returns its id and a ready sculpt line.
 export async function importMesh(path) {
+  if (typeof path !== "string" || !path.trim()) throw new Error("path must be the path of a mesh file (a string)");
   const ext = extname(path).slice(1).toLowerCase();
   if (!["stl", "obj", "glb"].includes(ext)) throw new Error("import_mesh takes .stl, .obj or .glb files");
-  const bytes = new Uint8Array(await readFile(path));
+  const bytes = await readFile(path).then((b) => new Uint8Array(b), (e) => {
+    throw new Error(e.code === "ENOENT" ? `no file at ${path}` : `cannot read ${path}: ${e.code || e.message}`);
+  });
   const soup = readMesh(bytes, ext); // fails early on unreadable files
   const id = await assetId(bytes);
   await mkdir(ASSETS, { recursive: true });
@@ -59,24 +65,22 @@ export const ready = initKernel();
 let baseDir = null;
 export const setBaseDir = (dir) => (baseDir = dir);
 
-const QUALITIES = ["draft", "standard", "fine"];
-async function compile(text, quality = "standard") {
-  await ready;
+function parseText(text) {
   if (typeof text !== "string" || !text.trim()) throw new Error("design must be the JewelScript text of a design (a non-empty string)");
-  if (!QUALITIES.includes(quality)) throw new Error(`quality must be one of ${QUALITIES.join(", ")}`);
   const { design, errors } = parse(text);
   if (errors.length) {
     const e = new Error("The script has errors");
     e.errors = errors;
     throw e;
   }
-  const sculpts = await resolveSculpts(design, (src) => loadAsset(src, baseDir));
-  const model = build(design, { quality, sculpts });
-  const exact = solidify(model);
-  model.solidGeometry = toGeometry(exact.solid);
-  model.exact = exact;
-  exact.free();
-  return { design, model };
+  return design;
+}
+const assets = (src) => loadAsset(src, baseDir);
+async function compile(text, quality = "standard") {
+  await ready;
+  if (!QUALITIES.includes(quality)) throw new Error(`quality must be one of ${QUALITIES.join(", ")}`);
+  const design = parseText(text);
+  return { design, model: await compileDesign(design, { quality, loadAsset: assets }) };
 }
 
 export async function measure(text) {
@@ -123,27 +127,15 @@ export async function edit(text, request) {
 }
 
 export async function exportBytes(text, format, { quality = "standard", part, sizes } = {}) {
-  const { design, model } = await compile(text, quality);
-  if (part !== undefined) {
-    const names = [...new Set([...model.metal, ...model.stones].map((x) => String(x.obj).split("~")[0]))];
-    if (!names.includes(part)) throw new Error(`no part named "${part}" (parts: ${names.join(", ")})`);
-    if (!["stl", "stl-stones"].includes(format)) throw new Error("part= works with stl and stl-stones");
+  await ready;
+  const design = parseText(text);
+  let list;
+  if (format === "sizerun") {
+    const m = /^(US|EU|DE|IT|JP)(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?::(\d+(?:\.\d+)?))?$/i.exec(sizes || "");
+    if (!m) throw new Error('sizes must look like "US5-8:0.5"');
+    list = sizeRange(m[1].toUpperCase(), +m[2], +m[3], m[4] ? +m[4] : 0.5);
   }
-  switch (format) {
-    case "stl": return { bytes: stlBytes(model, "metal", { obj: part }), ext: "stl" };
-    case "stl-stones": return { bytes: stlBytes(model, "stones", { obj: part }), ext: "stl" };
-    case "3mf": return { bytes: to3mf(model), ext: "3mf" };
-    case "glb": return { bytes: glbBytes(model), ext: "glb" };
-    case "obj": return { bytes: objText(model), ext: "obj" };
-    case "bundle": return { bytes: bundle(design, model, text), ext: "zip" };
-    case "sizerun": {
-      const m = /^(US|EU|DE|IT|JP)(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?::(\d+(?:\.\d+)?))?$/i.exec(sizes || "");
-      if (!m) throw new Error('sizes must look like "US5-8:0.5"');
-      const list = sizeRange(m[1].toUpperCase(), +m[2], +m[3], m[4] ? +m[4] : 0.5);
-      return { bytes: sizeRun(design, list, quality), ext: "zip" };
-    }
-    default: throw new Error(`unknown format "${format}" (stl, stl-stones, 3mf, glb, obj, bundle, sizerun)`);
-  }
+  return exportDesign(design, text, format, { quality, part, sizes: list, loadAsset: assets });
 }
 
 export function catalog() {

@@ -62,3 +62,56 @@ export function openEdges(geo) {
   for (const count of edges.values()) if (count % 2 === 1) open++;
   return open;
 }
+
+// Normals for display of a triangle soup: averaged across triangles that
+// share a vertex position, except across sharp edges (crease, degrees), so
+// smooth sculpts don't look faceted and real edges stay crisp.
+export function smoothNormals(geometry, crease = 50) {
+  const p = geometry.attributes.position.array;
+  const n = p.length / 9;
+  const fn = new Float32Array(n * 3);
+  for (let t = 0; t < n; t++) {
+    const o = t * 9;
+    const ux = p[o + 3] - p[o], uy = p[o + 4] - p[o + 1], uz = p[o + 5] - p[o + 2];
+    const vx = p[o + 6] - p[o], vy = p[o + 7] - p[o + 1], vz = p[o + 8] - p[o + 2];
+    // area-weighted (not normalised)
+    fn[t * 3] = uy * vz - uz * vy;
+    fn[t * 3 + 1] = uz * vx - ux * vz;
+    fn[t * 3 + 2] = ux * vy - uy * vx;
+  }
+  const groups = new Map();
+  const q = (v) => Math.round(v * 1e4);
+  for (let v = 0; v < n * 3; v++) {
+    const key = `${q(p[v * 3])},${q(p[v * 3 + 1])},${q(p[v * 3 + 2])}`;
+    const g = groups.get(key);
+    if (g) g.push(v);
+    else groups.set(key, [v]);
+  }
+  const cos = Math.cos((crease * Math.PI) / 180);
+  const out = new Float32Array(n * 9);
+  const unit = (t) => {
+    const x = fn[t * 3], y = fn[t * 3 + 1], z = fn[t * 3 + 2];
+    const l = Math.hypot(x, y, z) || 1;
+    return [x / l, y / l, z / l];
+  };
+  for (const g of groups.values()) {
+    for (const v of g) {
+      const a = unit(Math.floor(v / 3));
+      let sx = 0, sy = 0, sz = 0;
+      for (const w of g) {
+        const t = Math.floor(w / 3);
+        const b = unit(t);
+        if (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] < cos) continue;
+        sx += fn[t * 3];
+        sy += fn[t * 3 + 1];
+        sz += fn[t * 3 + 2];
+      }
+      const l = Math.hypot(sx, sy, sz) || 1;
+      out[v * 3] = sx / l;
+      out[v * 3 + 1] = sy / l;
+      out[v * 3 + 2] = sz / l;
+    }
+  }
+  geometry.setAttribute("normal", new THREE.BufferAttribute(out, 3));
+  return geometry;
+}

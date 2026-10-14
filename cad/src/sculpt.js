@@ -284,6 +284,116 @@ function edt(mask, dims, featureIsSet) {
   return d;
 }
 
+// Closest distance from p to triangle abc (Ericson), with the closest point.
+function pointTri(px, py, pz, t, pos, out) {
+  const ax = pos[t], ay = pos[t + 1], az = pos[t + 2];
+  const abx = pos[t + 3] - ax, aby = pos[t + 4] - ay, abz = pos[t + 5] - az;
+  const acx = pos[t + 6] - ax, acy = pos[t + 7] - ay, acz = pos[t + 8] - az;
+  const apx = px - ax, apy = py - ay, apz = pz - az;
+  const d1 = abx * apx + aby * apy + abz * apz, d2 = acx * apx + acy * apy + acz * apz;
+  let u, v; // closest = a + u*ab + v*ac
+  if (d1 <= 0 && d2 <= 0) [u, v] = [0, 0];
+  else {
+    const bpx = px - ax - abx, bpy = py - ay - aby, bpz = pz - az - abz;
+    const d3 = abx * bpx + aby * bpy + abz * bpz, d4 = acx * bpx + acy * bpy + acz * bpz;
+    const cpx = px - ax - acx, cpy = py - ay - acy, cpz = pz - az - acz;
+    const d5 = abx * cpx + aby * cpy + abz * cpz, d6 = acx * cpx + acy * cpy + acz * cpz;
+    const vc = d1 * d4 - d3 * d2, vb = d5 * d2 - d1 * d6, va = d3 * d6 - d5 * d4;
+    if (d3 >= 0 && d4 <= d3) [u, v] = [1, 0];
+    else if (d6 >= 0 && d5 <= d6) [u, v] = [0, 1];
+    else if (vc <= 0 && d1 >= 0 && d3 <= 0) [u, v] = [d1 / (d1 - d3), 0];
+    else if (vb <= 0 && d2 >= 0 && d6 <= 0) [u, v] = [0, d2 / (d2 - d6)];
+    else if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+      const w = (d4 - d3) / (d4 - d3 + (d5 - d6));
+      [u, v] = [1 - w, w];
+    } else {
+      const den = 1 / (va + vb + vc);
+      [u, v] = [vb * den, vc * den];
+    }
+  }
+  out[0] = ax + abx * u + acx * v;
+  out[1] = ay + aby * u + acy * v;
+  out[2] = az + abz * u + acz * v;
+  return Math.hypot(px - out[0], py - out[1], pz - out[2]);
+}
+
+// Exact signed distance in a band around the surface. Each triangle's
+// outward side is found from the flood fill (soups from generators often
+// have flipped faces); where that is unclear the voxel sign is kept.
+function exactBand(pos, phi, { origin, h, dims, outside, inside, surf }) {
+  const [nx, ny, nz] = dims;
+  const at = (i, j, k) => i + nx * (j + ny * k);
+  const band = 1.5 * h;
+  const T = pos.length / 9;
+  const orient = new Int8Array(T);
+  const nrm = new Float32Array(T * 3);
+  const vox = (x, y, z) => {
+    const i = Math.round((x - origin[0]) / h), j = Math.round((y - origin[1]) / h), k = Math.round((z - origin[2]) / h);
+    return i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz ? -1 : at(i, j, k);
+  };
+  for (let t = 0; t < T; t++) {
+    const o = t * 9;
+    const ux = pos[o + 3] - pos[o], uy = pos[o + 4] - pos[o + 1], uz = pos[o + 5] - pos[o + 2];
+    const vx = pos[o + 6] - pos[o], vy = pos[o + 7] - pos[o + 1], vz = pos[o + 8] - pos[o + 2];
+    let n = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+    const l = Math.hypot(...n);
+    if (!l) continue;
+    n = n.map((c) => c / l);
+    nrm.set(n, t * 3);
+    const cx = (pos[o] + pos[o + 3] + pos[o + 6]) / 3, cy = (pos[o + 1] + pos[o + 4] + pos[o + 7]) / 3, cz = (pos[o + 2] + pos[o + 5] + pos[o + 8]) / 3;
+    let score = 0;
+    for (const s of [1, 2]) {
+      const a = vox(cx + n[0] * s * h, cy + n[1] * s * h, cz + n[2] * s * h);
+      const b = vox(cx - n[0] * s * h, cy - n[1] * s * h, cz - n[2] * s * h);
+      if (a >= 0 && !surf[a]) score += outside[a] ? 1 : inside[a] ? -1 : 0;
+      if (b >= 0 && !surf[b]) score += outside[b] ? -1 : inside[b] ? 1 : 0;
+    }
+    orient[t] = score > 0 ? 1 : score < 0 ? -1 : 0;
+  }
+  const ud = new Float32Array(phi.length).fill(Infinity);
+  const sd = new Float32Array(phi.length);
+  const q = [0, 0, 0];
+  for (let t = 0; t < T; t++) {
+    if (!orient[t]) continue;
+    const o = t * 9;
+    const lo = [0, 1, 2].map((k) => Math.max(0, Math.ceil((Math.min(pos[o + k], pos[o + 3 + k], pos[o + 6 + k]) - band - origin[k]) / h)));
+    const hi = [0, 1, 2].map((k) => Math.min(dims[k] - 1, Math.floor((Math.max(pos[o + k], pos[o + 3 + k], pos[o + 6 + k]) + band - origin[k]) / h)));
+    for (let k = lo[2]; k <= hi[2]; k++) for (let j = lo[1]; j <= hi[1]; j++) for (let i = lo[0]; i <= hi[0]; i++) {
+      const c = at(i, j, k);
+      const px = origin[0] + i * h, py = origin[1] + j * h, pz = origin[2] + k * h;
+      const d = pointTri(px, py, pz, o, pos, q);
+      if (d >= ud[c] || d > band) continue;
+      ud[c] = d;
+      // positive inside: the point is behind the face's outward side
+      const side = ((px - q[0]) * nrm[t * 3] + (py - q[1]) * nrm[t * 3 + 1] + (pz - q[2]) * nrm[t * 3 + 2]) * orient[t];
+      sd[c] = side > 0 ? -d : d;
+    }
+  }
+  // the voxel distances are offset from the true ones by up to a voxel;
+  // measure the offset where both are known and shift the rest to match, so
+  // deeper levels (a hollow's inner wall) are at the right depth
+  let sum = 0, n = 0;
+  for (let c = 0; c < phi.length; c++) {
+    if (ud[c] === Infinity || Math.abs(sd[c] - phi[c]) >= 1.5 * h || (sd[c] > 0) !== (phi[c] > 0)) continue;
+    sum += sd[c] - phi[c];
+    n++;
+  }
+  const shift = n ? sum / n : 0;
+  const replaced = new Uint8Array(phi.length);
+  for (let c = 0; c < phi.length; c++) {
+    if (ud[c] === Infinity) continue;
+    // keep the flood fill's verdict where the two disagree by a lot (a
+    // closed hole, faces buried inside the solid); only the voxels right at
+    // the boundary may change side
+    const sameSide = sd[c] > 0 === phi[c] > 0;
+    if (Math.abs(sd[c] - phi[c]) < 1.5 * h && (sameSide || Math.abs(phi[c]) <= 0.51 * h)) {
+      phi[c] = sd[c];
+      replaced[c] = 1;
+    }
+  }
+  for (let c = 0; c < phi.length; c++) if (!replaced[c]) phi[c] += shift;
+}
+
 export function voxelRemesh(pos, { voxel = 0.15, close = 0, smooth = 1, hollow = 0, maxVoxels = 4e6 } = {}) {
   const { Manifold } = kernelModule();
   const b = bounds(pos);
@@ -351,6 +461,9 @@ export function voxelRemesh(pos, { voxel = 0.15, close = 0, smooth = 1, hollow =
   // 5. signed distance (mm), positive inside
   let phi = new Float32Array(N);
   for (let i = 0; i < N; i++) phi[i] = (inside[i] ? Math.sqrt(dToOut[i]) - 0.5 : -(Math.sqrt(dIn[i]) - 0.5)) * h;
+  // near the mesh, replace the voxel staircase with the exact distance to the
+  // triangles, so the rebuilt surface follows the original instead of the grid
+  exactBand(pos, phi, { origin, h, dims, outside, inside, surf });
   // 6. smoothing: separable [1 2 1] passes
   for (let s = 0; s < smooth; s++) {
     for (const [stride, len] of [[1, nx], [nx, ny], [nx * ny, nz]]) {
@@ -363,10 +476,8 @@ export function voxelRemesh(pos, { voxel = 0.15, close = 0, smooth = 1, hollow =
       phi = next;
     }
   }
-  // 7. hollow: keep a shell `hollow` mm thick under the surface. The surface
-  // is the level h/2 (surface voxels count as inside), so the inner wall
-  // sits at hollow + h/2 as well.
-  if (hollow > 0) for (let i = 0; i < N; i++) phi[i] = Math.min(phi[i], hollow + h - phi[i]);
+  // 7. hollow: keep a shell `hollow` mm thick under the surface
+  if (hollow > 0) for (let i = 0; i < N; i++) phi[i] = Math.min(phi[i], hollow - phi[i]);
 
   const sdf = ([x, y, z]) => {
     const fx = (x - origin[0]) / h, fy = (y - origin[1]) / h, fz = (z - origin[2]) / h;
@@ -379,7 +490,7 @@ export function voxelRemesh(pos, { voxel = 0.15, close = 0, smooth = 1, hollow =
     return (x00 * (1 - ty) + x10 * ty) * (1 - tz) + (x01 * (1 - ty) + x11 * ty) * tz;
   };
   const box = { min: origin, max: origin.map((o, k) => o + (dims[k] - 1) * h) };
-  return { manifold: Manifold.levelSet(sdf, box, h, h * 0.5), voxel: h, dims };
+  return { manifold: Manifold.levelSet(sdf, box, h, 0), voxel: h, dims };
 }
 
 function soupToManifold(pos) {
@@ -430,12 +541,13 @@ export function prepareSculpt(soup, opts = {}, ctx = {}) {
   const valid = direct && String(direct.status()) === "NoError" && !direct.isEmpty() && direct.volume() > 0;
   info.notWatertight = !valid;
   // a broken mesh needs its holes closed, or the flood fill leaks inside
-  let close = o.close;
-  if (!valid && o.repair === "auto" && close < 2) {
-    close = 2;
-    info.autoClose = 2;
+  // (and a light smoothing pass evens out the seams of the rebuild)
+  let close = o.close, smooth = o.smooth;
+  if (!valid && o.repair === "auto") {
+    if (close < 2) close = info.autoClose = 2;
+    if (smooth < 1) smooth = info.autoSmooth = 1;
   }
-  const wantsVoxel = o.repair === "voxel" || o.smooth > 0 || o.hollow > 0 || close > 0;
+  const wantsVoxel = o.repair === "voxel" || smooth > 0 || o.hollow > 0 || close > 0;
   if (valid && !wantsVoxel) {
     // separate closed shells that overlap (a head modelled on top of the
     // band) are one piece of metal: union them before looking for debris
@@ -456,7 +568,7 @@ export function prepareSculpt(soup, opts = {}, ctx = {}) {
   } else direct?.delete();
   if (!man) {
     if (o.repair === "none") throw new Error("The mesh is not watertight; use repair=voxel (or auto) to rebuild it");
-    const r = voxelRemesh(pos, { voxel: o.voxel, close, smooth: o.smooth, hollow: o.hollow });
+    const r = voxelRemesh(pos, { voxel: o.voxel, close, smooth, hollow: o.hollow });
     man = r.manifold;
     info.method = "voxel";
     info.voxel = r.voxel;

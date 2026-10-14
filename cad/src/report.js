@@ -54,8 +54,9 @@ export function report(model, exact = null) {
 
   const groups = new Map();
   for (const s of model.stones) {
-    const key = `${s.role}|${s.cut}|${s.dia}`;
-    groups.set(key, { role: s.role, cut: s.cut, dia: s.dia, count: (groups.get(key)?.count || 0) + 1, each: caratOf(s.cut, s.dia) });
+    const dia = Math.round(s.dia * 100) / 100;
+    const key = `${s.role}|${s.cut}|${dia}`;
+    groups.set(key, { role: s.role, cut: s.cut, dia, count: (groups.get(key)?.count || 0) + 1, each: caratOf(s.cut, s.dia) });
   }
   const stoneList = [...groups.values()].map((g) => ({ ...g, total: g.count * g.each }));
   const totalCt = stoneList.reduce((s, g) => s + g.total, 0);
@@ -190,7 +191,7 @@ export function report(model, exact = null) {
     }
     if (info.unscaled) checks.push({ level: "warn", text: `sculpt ${id} is ${Math.max(...info.sizeBeforeRepair).toFixed(1)} mm across, which does not look like millimetres: use fit=ring or set scale=` });
     if (info.removedPieces) checks.push({ level: "info", text: `sculpt ${id}: removed ${info.removedPieces} loose piece(s), ${info.removedVolume} mm³ in all` });
-    if (info.autoClose) checks.push({ level: "info", text: `sculpt ${id}: holes in the mesh were closed (close=${info.autoClose}); set close= to change it` });
+    if (info.autoClose) checks.push({ level: "info", text: `sculpt ${id}: holes in the mesh were closed (close=${info.autoClose}${info.autoSmooth ? `, smooth=${info.autoSmooth}` : ""}); set close= and smooth= to change it` });
     if (info.notWatertight && info.method === "voxel") checks.push({ level: "info", text: `sculpt ${id} was not watertight; rebuilt as a solid (voxel ${info.voxel.toFixed(2)} mm)` });
   }
   if (!checks.some((c) => c.level === "error" || c.level === "warn")) checks.unshift({ level: "ok", text: "No warnings" });

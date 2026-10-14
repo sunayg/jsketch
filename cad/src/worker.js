@@ -2,12 +2,14 @@
 // so the editor stays responsive.
 //   { kind: "sculpt", id, sculpt, innerDiameter } -> prepared mesh + info
 //   { kind: "exact", id, text }                  -> exact volumes + metal mesh
+//   { kind: "export", id, text, format, quality, part, sizes } -> file bytes
 import wasmUrl from "manifold-3d/manifold.wasm?url";
 import { initKernel, solidify } from "./kernel.js";
 import { parse } from "./script.js";
 import { build } from "./build.js";
 import { resolveSculpts } from "./sculpts.js";
 import { getAsset } from "./assets-idb.js";
+import { exportDesign } from "./exporter.js";
 
 const ready = initKernel({ locateFile: () => wasmUrl });
 const loadAsset = (src) => getAsset(src);
@@ -39,6 +41,12 @@ self.onmessage = async (e) => {
     }
     const { design, errors } = parse(msg.text);
     if (errors.length) throw new Error("script has errors");
+    if (msg.kind === "export") {
+      const { bytes, ext } = await exportDesign(design, msg.text, msg.format, { quality: msg.quality, part: msg.part, sizes: msg.sizes, loadAsset });
+      const copy = bytes.slice();
+      self.postMessage({ kind: "export", id: msg.id, bytes: copy, ext }, [copy.buffer]);
+      return;
+    }
     const sculpts = await resolveSculpts(design, loadAsset);
     const model = build(design, { quality: msg.quality || "standard", sculpts });
     const t0 = performance.now();

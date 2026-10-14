@@ -36,7 +36,7 @@ npm test             # all tests
 
 **Solid kernel and sculpts**
 - Metal is one exact solid: every part is unioned and every stone's seat cut with Manifold (WASM, in a background worker), so weights are exact, floating pieces are found exactly, and whole-piece exports are a single watertight shell.
-- Sculpts: import an AI-generated mesh or a scan (STL, OBJ, GLB) as part of the design. "Fit to ring" finds the finger hole at any angle, sizes it to the ring size and turns the head up. Broken meshes are rebuilt as solids (voxel remesh with hole closing), with optional smoothing, hollowing to a wall, symmetrizing and removal of loose debris. Meshes are stored in the browser (IndexedDB) or an assets folder (CLI/MCP).
+- Sculpts: import an AI-generated mesh or a scan (STL, OBJ, GLB) as part of the design. "Fit to ring" finds the finger hole at any angle and in any units (ignoring stray debris), sizes the finished bore exactly to the ring size and turns the head up; a head modelled as a separate shell overlapping the band is joined to it. Broken meshes are rebuilt as solids: a voxel remesh that closes holes, follows the original triangles closely near the surface (exact distances rather than a voxel staircase), and can smooth, hollow to a set wall, symmetrize and drop loose debris. Meshes are stored in the browser (IndexedDB) or an assets folder (CLI/MCP).
 - Pavé on sculpts: the Surface tool paints onto a sculpt; stones follow the surface, never hang over an edge, get beads and seats, and auto-size. Sculpt walls are measured at every vertex (heatmap and minimum-wall check).
 
 **Editor**
@@ -45,11 +45,11 @@ npm test             # all tests
 - Imports: `.jws` scripts; STL/OBJ/GLB as a sculpt or as a translucent reference (GLB in metres is converted); SVG artwork as a pavé region on the shoulder (scaled to fit).
 
 **Checks** (in the sidebar, the tech sheet, the CLI and the MCP server)
-- Thinnest shank wall from the real profile (with its location) and every part against `rule min_wall`; open (non-watertight) metal; metal not connected to the rest; stones in the finger bore; stones overhanging the band; stones nothing holds; stones running into prongs; metal under pavé culets; edge margin; touching stones; overlaps; unstocked melee sizes; fills that produce no stones.
+- Thinnest shank wall from the real profile (with its location) and every part against `rule min_wall`; open (non-watertight) metal; metal not connected to the rest; nothing going round the finger (no band and no fitted sculpt); sculpts that could not be loaded; band objects on a ring with no band; sculpt metal reaching into the finger hole (with the measured bore); stones in the finger bore; stones overhanging the band; stones nothing holds; stones running into prongs; metal under pavé culets; edge margin; touching stones; overlaps; unstocked melee sizes; fills that produce no stones.
 
 **Output**
 - Tech sheet: top/front/side/perspective views with dimension lines, gem map, metal table with house density, stone list in ct/mg/pts, units g/dwt/ozt/tola and mm/cm/in, logo, notes; preview, download as one HTML file, or print.
-- Export: STL (metal, stones, or one object), 3MF (millimetres, metal and stones as objects), GLB (in metres, as glTF expects), OBJ, a portable bundle (script plus meshes), and size runs (one STL per finger size). Draft/standard/fine quality and casting shrinkage %.
+- Export: STL (metal, stones, or one object), 3MF (millimetres, metal and stones as objects), GLB (in metres, as glTF expects), OBJ, a portable bundle (script plus meshes), and size runs (one STL per finger size, with fitted sculpts re-fitted to each size). Draft/standard/fine quality and casting shrinkage %. The editor, CLI and MCP server share one export path: sculpts included, whole-piece metal from the exact solid.
 
 ## For AI agents
 
@@ -63,7 +63,7 @@ Tools: `read_docs`, `browse_catalog`, `search_examples`, `get_example`, `validat
 
 - No general modelling operations for the user: no free booleans, sweeps along arbitrary rails, lofts, NURBS surfaces, engraving or relief. (Booleans are used internally for the solid and seats.)
 - No STEP, Rhino `.3dm` or JewelCAD `.jcd` import; no image or font import.
-- Sculpt repair is voxel-based: details smaller than the voxel (0.15 mm by default) are softened, and repairing a large mesh takes seconds.
+- Sculpt repair is voxel-based: details smaller than the voxel (0.15 mm by default) are softened where holes had to be closed, and repairing a large mesh takes seconds.
 - Stone clearance against other settings uses simple shapes (capsules for prongs and posts, outline prisms for bezels and plates), not the exact metal.
 - Painted band positions are stored as mm along the band, so changing the ring size moves them around the ring slightly.
 - Carats are diamond estimates from size; densities are typical values for each alloy.

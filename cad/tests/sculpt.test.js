@@ -171,7 +171,7 @@ test("CLI and MCP: a broken AI ring sculpt is imported, repaired, fitted and mea
     await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } });
     const imp = JSON.parse((await rpc("tools/call", { name: "import_mesh", arguments: { path: join(dir, "ai-ring.stl") } })).result.content[0].text);
     assert.match(imp.id, /^[0-9a-f]{16}$/);
-    const design = script.replace(/sculpt .*\n/, `${imp.line} close=2\n`);
+    const design = script.replace(/sculpt .*\n/, `${imp.line}\n`); // the suggested line works as given
     const res = (await rpc("tools/call", { name: "render_design", arguments: { design, views: ["iso"], size: 128 } })).result;
     assert.ok(!res.isError, JSON.stringify(res.content[0]));
     assert.ok(res.content.some((c) => c.type === "image"));

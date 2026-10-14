@@ -22,18 +22,23 @@ stroke id=row pts=8:0,20:0 dia=1.3 gap=0.15 setting=bead mirror=yes
 region id=z pts=8:-1,20:-1,20:1,8:1 dia=auto min=0.9 max=1.5 setting=bead mirror=yes
       a closed outline filled with a hex lattice; dia=auto picks the stocked
       melee size that covers the most area
-sculpt id=ring src=ring.stl fit=ring repair=auto close=2 smooth=1
+sculpt id=ring src=ring.stl fit=ring repair=auto
       an imported mesh (AI sculpt or scan) as part of the design. src: an
-      asset id or a .stl/.obj/.glb file name. fit=ring finds the finger hole,
-      sizes it to the ring and turns the head up; repair=auto rebuilds broken
-      meshes as solids (voxel=0.15 mm, close= seals holes, smooth=, keep=
-      largest drops debris); hollow=0.8 leaves a wall; symmetrize=x+|x-;
+      asset id or a .stl/.obj/.glb file name (no folders outside the script's
+      or the assets folder). fit=ring finds the finger hole at any angle and
+      in any units, sizes the finished bore to the ring and turns the head
+      up; overlapping shells (a head modelled on the band) become one piece.
+      repair=auto keeps a mesh that is already a closed solid and rebuilds a
+      broken one (voxel=0.15 mm, closing holes and smoothing once unless
+      close= / smooth= say otherwise); repair=voxel always rebuilds; keep=
+      largest drops debris; hollow=0.8 leaves a 0.8 mm wall; symmetrize=x+|x-;
       scale/x/y/z/rx/ry/rz place it by hand. Use shank profile=none when the
-      sculpt is the whole ring.
+      sculpt is the whole ring (accents, strokes, regions and brushed pavé
+      need a band; use surfpave on the sculpt instead).
 surfpave id=p on=ring pts=x:y:z,… r=1.5 dia=auto setting=bead mirror=yes
       pavé brushed onto a sculpt; pts are brush centres in mm
 accent … turn=90                    spin an accent about its axis (aim a pear)
-pave dia=1.3 gap=0.15 bead=0.35    settings for brushed pavé (paint lines)
+pave dia=1.3 gap=0.15 bead=0.35    settings for brushed pavé (written once there is paint)
 paint s=0 w=0 r=2                  one brush dab
 rule min_wall=0.8 shrink=0         minimum wall checked; shrink = % scale on export
 

@@ -51,6 +51,8 @@ export function svgToRegion(text, design) {
     k = maxLen / (maxX - minX);
     note = " It was scaled down to fit the shoulder.";
   }
+  const tall = (maxY - minY) * k;
+  if (tall < 1.2) throw new Error(`Once scaled to fit the shoulder the SVG shape is only ${tall.toFixed(2)} mm across, too thin to hold stones; use a fuller shape`);
   const centreS = 14;
   const pts = best.pts.map((p) => [
     Math.round((centreS + (p.x - (minX + maxX) / 2) * k) * 10) / 10,

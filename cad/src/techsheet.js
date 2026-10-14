@@ -47,7 +47,7 @@ export function gemMapSvg(model, report, size = 420) {
         const [rx, rz] = [ox * Math.cos(t) - oz * Math.sin(t), ox * Math.sin(t) + oz * Math.cos(t)];
         return `${(size / 2 + (x + rx) * k).toFixed(1)},${(size / 2 + (y + rz) * k).toFixed(1)}`;
       }).join(" ");
-      return `<polygon points="${poly}" fill="${color}22" stroke="${color}" stroke-width="0.8"><title>${esc(`${groupIndex.get(`${s.role}|${s.cut}|${s.dia}`)}: ${s.role} ${s.cut} ${s.dia} mm`)}</title></polygon>`;
+      return `<polygon points="${poly}" fill="${color}22" stroke="${color}" stroke-width="0.8"><title>${esc(`${groupIndex.get(`${s.role}|${s.cut}|${Math.round(s.dia * 100) / 100}`)}: ${s.role} ${s.cut} ${s.dia} mm`)}</title></polygon>`;
     }).join("");
     return `<figure><svg class="gemmap" viewBox="0 0 ${size} ${size}" role="img" aria-label="Gem map, ${esc(title)}">${shapes}</svg><figcaption>${esc(title)} · ${stones.length} stone${stones.length > 1 ? "s" : ""}</figcaption></figure>`;
   };

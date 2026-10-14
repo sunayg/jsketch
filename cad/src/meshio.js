@@ -28,14 +28,19 @@ export function readStl(bytes) {
 export function readObj(text) {
   const verts = [];
   const out = [];
-  for (const line of text.split(/\r?\n/)) {
-    const t = line.trim().split(/\s+/);
-    if (t[0] === "v") verts.push([+t[1], +t[2], +t[3]]);
-    else if (t[0] === "f") {
+  const lines = text.split(/\r?\n/);
+  for (let n = 0; n < lines.length; n++) {
+    const t = lines[n].trim().split(/\s+/);
+    if (t[0] === "v") {
+      const v = [+t[1], +t[2], +t[3]];
+      if (!v.every(Number.isFinite)) throw new Error(`OBJ line ${n + 1}: a vertex needs three numbers`);
+      verts.push(v);
+    } else if (t[0] === "f") {
       const idx = t.slice(1).map((s) => {
         const i = parseInt(s.split("/")[0], 10);
         return i < 0 ? verts.length + i : i - 1;
       });
+      if (idx.some((i) => !verts[i])) throw new Error(`OBJ line ${n + 1}: a face uses a vertex that does not exist`);
       for (let k = 1; k + 1 < idx.length; k++) for (const i of [idx[0], idx[k], idx[k + 1]]) out.push(...verts[i]);
     }
   }

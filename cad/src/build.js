@@ -382,6 +382,12 @@ function surfaceFill(grid, dabs, r, dia, gap, id, occupied, colliders = []) {
   const pitch = dia + gap;
   const tri = new THREE.Triangle();
   const centres = dabs.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+  // which way the surface faced where each dab landed: the brush paints that
+  // side only, never the far side of a thin wall (or the inside of the bore)
+  const facing = centres.map((c) => {
+    const cp = grid.closestPoint(c, 0.5);
+    return cp ? grid.normal(cp.tri) : null;
+  });
   const tris = new Set();
   for (const c of centres) for (const t of grid.near(c, r + grid.cell)) tris.add(t);
   // candidate points on the brushed surface, deduplicated on a fine grid
@@ -394,7 +400,7 @@ function surfaceFill(grid, dabs, r, dia, gap, id, occupied, colliders = []) {
     const u = Math.max(1, Math.ceil(len / step));
     for (let i = 0; i <= u; i++) for (let j = 0; j <= u - i; j++) {
       const q = tri.a.clone().addScaledVector(tri.b.clone().sub(tri.a), i / u).addScaledVector(tri.c.clone().sub(tri.a), j / u);
-      if (!centres.some((c) => c.distanceTo(q) <= r)) continue;
+      if (!centres.some((c, k) => c.distanceTo(q) <= r && (!facing[k] || grid.normal(t).dot(facing[k]) > 0.2))) continue;
       const key = `${Math.round(q.x / (step / 2))},${Math.round(q.y / (step / 2))},${Math.round(q.z / (step / 2))}`;
       if (seen.has(key)) continue;
       seen.add(key);

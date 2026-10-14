@@ -323,7 +323,10 @@ export function serialize(d) {
   out.push(line("ring", d.ring, d.exprs), line("shank", d.shank, d.exprs), line("stone", d.stone, d.exprs));
   if (d.halo) out.push(line("halo", d.halo, d.exprs));
   for (const [cmd, key] of Object.entries(LISTS)) for (const o of d[key]) out.push(line(cmd, o));
-  out.push(line("pave", d.pave, d.exprs));
+  // brushed-pavé settings only matter once there is paint, or when changed
+  const paveDefault = defaultDesign().pave;
+  const paveSet = Object.keys(d.pave).some((k) => d.pave[k] !== paveDefault[k] || d.exprs[`pave.${k}`]) || Object.keys(paveDefault).some((k) => !(k in d.pave));
+  if (d.paint.length || paveSet) out.push(line("pave", d.pave, d.exprs));
   for (const p of d.paint) out.push(line("paint", p));
   out.push(line("rule", d.rule, d.exprs));
   return out.join("\n") + "\n";

@@ -5,9 +5,8 @@ import { stoneMatrix } from "./build.js";
 import { zipStore } from "./zip.js";
 import * as THREE from "three";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
-import { build } from "./build.js";
 import { serialize } from "./script.js";
-import { parseSize, formatSize, RANGE } from "./sizes.js";
+import { RANGE } from "./sizes.js";
 
 const flat = (g) => {
   const out = g.index ? g.toNonIndexed() : g.clone();
@@ -88,24 +87,9 @@ export function to3mf(model, shrinkPercent) {
 // Binary STL of metal or stones (optionally one object), in mm.
 export function stlBytes(model, which, opts = {}) {
   const g = bakeGeometry(model, which, undefined, opts);
+  if (!g) return new Uint8Array(84); // a valid STL with no triangles
   const view = new STLExporter().parse(new THREE.Mesh(g || new THREE.BufferGeometry()), { binary: true });
   return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-}
-
-// One metal STL per finger size, zipped. sizes: ["US5", "US5.5", …]
-export function sizeRun(design, sizes, quality = "standard") {
-  const files = {};
-  for (const size of sizes) {
-    const s = parseSize(size);
-    if (!s) throw new Error(`Bad size ${size}`);
-    const d = structuredClone(design);
-    d.ring.size = formatSize(s.system, s.n);
-    delete d.ring.diameter;
-    delete d.exprs["ring.diameter"];
-    const m = build(d, { quality });
-    files[`${d.name.replace(/[^\w-]+/g, "_")}_${d.ring.size}.stl`] = stlBytes(m, "metal");
-  }
-  return zipStore(files);
 }
 
 // Sizes from..to in a system, only those the language accepts. Throws on a
@@ -128,7 +112,7 @@ export function bundle(design, model, text = null) {
   return zipStore({
     "design.jws": text ?? serialize(design),
     "metal.stl": stlBytes(model, "metal"),
-    "stones.stl": stlBytes(model, "stones"),
+    ...(model.stones.length ? { "stones.stl": stlBytes(model, "stones") } : {}),
     "model.3mf": to3mf(model),
     "README.txt": "JewelScript bundle: design.jws is the editable source; the meshes are in millimetres.\n",
   });
