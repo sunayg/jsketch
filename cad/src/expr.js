@@ -18,6 +18,7 @@ export function evalExpr(src, vars = {}) {
     }
     if (t === "-") return -primary();
     if (t === "+") return primary();
+    if (t === "*" || t === "/" || t === ")") throw new Error(`Unexpected "${t}" (use * for multiply; there is no ** power)`);
     if (/^[\d.]/.test(t)) return parseFloat(t);
     if (t === "pi") return Math.PI;
     if (Object.hasOwn(vars, t)) return vars[t];

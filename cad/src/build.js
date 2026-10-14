@@ -15,6 +15,8 @@ export { fixWinding, signedVolume };
 const UP = new THREE.Vector3(0, 1, 0);
 const TAU = Math.PI * 2;
 const QUALITY = { draft: 64, standard: 160, fine: 320 };
+// metal left between a band-set stone and the band edge
+export const EDGE = 0.25;
 
 // World transform of a stone: girdle centre at pos, table facing along normal.
 export const stoneMatrix = (s) =>
@@ -97,6 +99,16 @@ function tipGeometry(kind, pr, at, inward) {
   return g;
 }
 
+// Flat ring between two outline offsets, top face at topY.
+function annulus(cut, dia, inOff, outOff, height, topY) {
+  const shape = new THREE.Shape(outline(cut, dia, outOff, 96).map(([x, z]) => new THREE.Vector2(x, z)));
+  shape.holes.push(new THREE.Path(outline(cut, dia, inOff, 96).map(([x, z]) => new THREE.Vector2(x, z)).reverse()));
+  const g = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, curveSegments: 1 });
+  g.rotateX(-Math.PI / 2);
+  g.translate(0, topY - height, 0);
+  return g;
+}
+
 function collar(cut, dia, wall, height, topY) {
   const shape = new THREE.Shape(outline(cut, dia, wall).map(([x, z]) => new THREE.Vector2(x, z)));
   shape.holes.push(new THREE.Path(outline(cut, dia, -0.02).map(([x, z]) => new THREE.Vector2(x, z)).reverse()));
@@ -106,10 +118,17 @@ function collar(cut, dia, wall, height, topY) {
   return g;
 }
 
+// Prong wire radius for a stone width: 0.8-1.2 mm wire.
+export const prongRadius = (dia) => Math.max(0.4, Math.min(0.6, dia * 0.07));
+// How far prongs reach outside the girdle (prong offset + tip radius).
+const prongReach = (dia) => prongRadius(dia) * 1.7;
+
 // Returns metal parts in the local frame for a stone of `cut`/`dia` whose
-// girdle sits at girdleY, with metal starting at baseY.
+// girdle sits at girdleY, with metal starting at baseY. parts.colliders holds
+// simple shapes (capsules) of the prongs, used by the stone-clearance check.
 function headParts({ cut, dia, setting, prongs = 4, tip = "round", baseY, girdleY, minWall }) {
   const parts = [];
+  parts.colliders = [];
   const pav = 0.43 * dia;
   const aspect = CUTS[cut].aspect;
   const halfW = dia / 2;
@@ -122,11 +141,13 @@ function headParts({ cut, dia, setting, prongs = 4, tip = "round", baseY, girdle
       const base = new THREE.Vector3(x * 0.35, baseY, z * 0.35);
       parts.push({ name: `prong${i + 1}`, geometry: rod(base, top, pr), thickness: pr * 2 });
       const inward = new THREE.Vector3(-x, 0, -z).normalize();
-      parts.push({ name: `tip${i + 1}`, geometry: tipGeometry(tip, pr, new THREE.Vector3(x * 0.97, girdleY + 0.25, z * 0.97), inward) });
+      const tipAt = new THREE.Vector3(x * 0.97, girdleY + 0.25, z * 0.97);
+      parts.push({ name: `tip${i + 1}`, geometry: tipGeometry(tip, pr, tipAt, inward) });
+      parts.colliders.push({ a: base, b: top, r: pr }, { a: tipAt, b: tipAt, r: pr * 1.05 });
     }
   };
   if (setting === "prong") {
-    const pr = Math.max(0.4, Math.min(0.6, dia * 0.07)); // 0.8-1.2 mm wire
+    const pr = prongRadius(dia);
     prongSet(prongs, pr);
     const wire = Math.max(0.45, pr * 0.8);
     const m = Math.max(halfW, halfL);
@@ -136,12 +157,18 @@ function headParts({ cut, dia, setting, prongs = 4, tip = "round", baseY, girdle
     gallery.translate(0, baseY + 0.3 + pav * 0.35, 0);
     parts.push({ name: "gallery", geometry: gallery, thickness: wire * 2 });
   } else if (setting === "bezel") {
+    // collar from just above the girdle down to a seat that stops under the
+    // culet, so the bezel is one piece with the band and the stone sits free
     const wall = Math.max(0.5, minWall);
-    const h = Math.max(0.6, girdleY - baseY + 0.3 - pav * 0.4);
-    parts.push({ name: "bezel", geometry: collar(cut, dia, wall, h, girdleY + 0.3), thickness: wall });
-    const seat = new THREE.CylinderGeometry(halfW * 0.7, halfW * 0.5, Math.max(0.4, girdleY - h + 0.3 - baseY + 0.2), 20);
-    seat.translate(0, (baseY + girdleY - h + 0.3) / 2, 0);
-    parts.push({ name: "seat", geometry: seat });
+    const seatTop = girdleY - pav - 0.05;
+    const hasSeat = seatTop - baseY >= 0.3;
+    const bottom = hasSeat ? seatTop - 0.1 : baseY;
+    parts.push({ name: "bezel", geometry: collar(cut, dia, wall, girdleY + 0.3 - bottom, girdleY + 0.3), thickness: wall });
+    if (hasSeat) {
+      const seat = new THREE.CylinderGeometry(halfW * 0.7, halfW * 0.6, seatTop - baseY, 24);
+      seat.translate(0, (seatTop + baseY) / 2, 0);
+      parts.push({ name: "seat", geometry: seat });
+    }
   } else if (setting === "illusion") {
     // a wide plate around the girdle makes the stone read larger
     const plateT = Math.max(0.8, minWall);
@@ -159,9 +186,9 @@ function hexFill(d, geom, dia, gap, inside, role, occupied = []) {
   const pitch = dia + gap;
   const rowH = (pitch * Math.sqrt(3)) / 2;
   const head = new THREE.Vector3(0, geom.ro, 0);
-  const headR = d.stone.dia * 0.3 + dia / 2 + 0.3;
+  const headR = d.stone.setting === "none" ? 0 : d.stone.dia * 0.3 + dia / 2 + 0.3;
   const out = [];
-  const rows = Math.floor((width / 2 - dia / 2 - 0.1) / rowH);
+  const rows = Math.floor((width / 2 - dia / 2 - EDGE) / rowH);
   const count = Math.floor(circumference / pitch);
   const step = circumference / count; // closes the ring evenly
   for (let j = -rows; j <= rows; j++) {
@@ -300,6 +327,7 @@ export function build(d, { quality = "standard" } = {}) {
   const metal = [];
   const stones = [];
   const warnings = [];
+  const colliders = [];
   const minWall = d.rule.min_wall;
 
   // shank: revolve the profile around Z, then stand the ring up
@@ -307,21 +335,25 @@ export function build(d, { quality = "standard" } = {}) {
   lathe.rotateX(Math.PI / 2);
   metal.push({ name: "shank", obj: "shank", geometry: fixWinding(lathe) });
 
-  // centre stone and head
+  // centre stone and head (setting=none: a plain band, e.g. an eternity ring)
+  const hasCentre = d.stone.setting !== "none";
   const dia = d.stone.dia;
   const cut = CUTS[d.stone.cut];
   const girdleY = ro + 0.5 + 0.43 * dia;
-  stones.push({ cut: d.stone.cut, dia, role: "centre", obj: "stone", pos: new THREE.Vector3(0, girdleY, 0), normal: UP.clone() });
-  for (const p of headParts({ ...d.stone, baseY: ro - 0.3, girdleY, minWall })) {
-    metal.push({ ...p, obj: "stone", geometry: fixWinding(p.geometry) });
-  }
+  if (hasCentre) {
+    stones.push({ cut: d.stone.cut, dia, role: "centre", obj: "stone", pos: new THREE.Vector3(0, girdleY, 0), normal: UP.clone() });
+    const head = headParts({ ...d.stone, baseY: ro - 0.3, girdleY, minWall });
+    for (const p of head) metal.push({ ...p, obj: "stone", geometry: fixWinding(p.geometry) });
+    for (const c of head.colliders) colliders.push({ ...c, obj: "stone" });
+  } else if (d.halo) warnings.push("halo needs a centre stone; it is ignored while stone setting=none");
 
   // halo follows the cut's girdle outline
-  if (d.halo) {
+  if (d.halo && hasCentre) {
     const { dia: hd, gap } = d.halo;
     const kind = d.halo.kind || "single";
     const halfW = dia / 2, halfL = (dia * cut.aspect) / 2;
-    const base = d.stone.setting === "bezel" ? Math.max(0.5, minWall) : d.stone.setting === "illusion" ? Math.max(0.8, dia * 0.22) : 0;
+    // halo stones start outside whatever holds the centre stone
+    const base = d.stone.setting === "bezel" ? Math.max(0.5, minWall) : d.stone.setting === "illusion" ? Math.max(0.8, dia * 0.22) : prongReach(dia);
     const rings = [];
     if (kind === "hidden") {
       // under the girdle, tucked around the pavilion
@@ -333,16 +365,40 @@ export function build(d, { quality = "standard" } = {}) {
         rings.push({ off: base + gap + hd + gap + hd2 / 2, y: girdleY - 0.3, hd: hd2, role: "halo2" });
       }
     }
+    // Equal arc spacing crowds stones at sharp points (pear and marquise tips),
+    // and a scaled outline is not a true offset, so rings pinch together there:
+    // keep a stone only if it clears every halo stone already kept, in any ring.
+    // Prongs come first: a halo stone is skipped where a prong passes, as a
+    // bench jeweller would leave the prong between two halo stones.
+    const segDist = (p, a, b) => {
+      const ab = b.clone().sub(a);
+      const t = ab.lengthSq() ? Math.max(0, Math.min(1, p.clone().sub(a).dot(ab) / ab.lengthSq())) : 0;
+      return a.clone().addScaledVector(ab, t).distanceTo(p);
+    };
+    const kept = [];
     for (const r of rings) {
       for (const [x, z] of spaceAlong(outline(d.stone.cut, dia, r.off), r.hd + gap).pts) {
-        stones.push({ cut: "round", dia: r.hd, role: r.role, obj: "halo", pos: new THREE.Vector3(x, r.y, z), normal: UP.clone() });
+        const pos = new THREE.Vector3(x, r.y, z);
+        if (colliders.some((c) => segDist(pos, c.a, c.b) < c.r + r.hd / 2 + 0.05)) continue;
+        if (kept.every((k) => k.pos.distanceTo(pos) >= (k.dia + r.hd) / 2 + gap * 0.5)) kept.push({ pos, dia: r.hd });
+        else continue;
+        stones.push({ cut: "round", dia: r.hd, role: r.role, obj: "halo", pos, normal: UP.clone() });
       }
     }
-    const outer = rings[rings.length - 1];
+    // a frame under the halo stones only: an outline-following ring, open in
+    // the middle so the centre stone's pavilion stays clear
+    const inner = rings[0], outer = rings[rings.length - 1];
     const plateT = Math.max(0.8, minWall);
-    const plate = new THREE.CylinderGeometry(Math.max(halfW, halfL) + outer.off + outer.hd * 0.4, halfW * 0.6, plateT, 40);
-    plate.translate(0, outer.y - outer.hd * 0.43 - plateT / 2 + 0.05, 0);
-    metal.push({ name: "halo-plate", obj: "halo", geometry: fixWinding(plate), thickness: plateT });
+    const top = Math.min(...rings.map((r) => r.y - r.hd * 0.43)) + 0.05;
+    const frame = annulus(d.stone.cut, dia, inner.off - inner.hd / 2 - 0.05, outer.off + outer.hd * 0.4, plateT, top);
+    metal.push({ name: "halo-frame", obj: "halo", geometry: fixWinding(frame), thickness: plateT });
+    // two posts tie the frame to the band, either side along the finger
+    const px = halfW + (inner.off + outer.off) / 2;
+    for (const sx of [-1, 1]) {
+      const footY = Math.sqrt(Math.max(0, ro * ro - px * px)) - 0.3;
+      const post = rod(new THREE.Vector3(sx * px, top - plateT / 2, 0), new THREE.Vector3(sx * px, footY, 0), 0.45);
+      metal.push({ name: `halo-post${sx > 0 ? 2 : 1}`, obj: "halo", geometry: fixWinding(post), thickness: 0.9 });
+    }
   }
 
   // accents: single stones on the band, optionally mirrored to the other shoulder
@@ -353,13 +409,13 @@ export function build(d, { quality = "standard" } = {}) {
       const flush = a.setting === "flush";
       const localGirdle = flush ? -0.05 : 0.43 * a.dia * 0.5 + 0.15;
       stones.push({
-        cut: a.cut, dia: a.dia, role: "accent", obj: a.id, s, w: a.w,
+        cut: a.cut, dia: a.dia, role: "accent", obj: a.id, s, w: a.w, flush,
         pos: new THREE.Vector3(0, localGirdle, 0).applyMatrix4(frame), normal,
       });
       if (!flush) {
-        for (const p of headParts({ cut: a.cut, dia: a.dia, setting: a.setting, prongs: a.prongs ?? 4, tip: a.tip, baseY: -0.3, girdleY: localGirdle, minWall })) {
-          metal.push({ ...p, name: `${id} ${p.name}`, obj: a.id, geometry: fixWinding(p.geometry.applyMatrix4(frame)) });
-        }
+        const head = headParts({ cut: a.cut, dia: a.dia, setting: a.setting, prongs: a.prongs ?? 4, tip: a.tip, baseY: -0.3, girdleY: localGirdle, minWall });
+        for (const p of head) metal.push({ ...p, name: `${id} ${p.name}`, obj: a.id, geometry: fixWinding(p.geometry.applyMatrix4(frame)) });
+        for (const c of head.colliders) colliders.push({ a: c.a.clone().applyMatrix4(frame), b: c.b.clone().applyMatrix4(frame), r: c.r, obj: a.id });
       }
     }
   }
@@ -381,6 +437,7 @@ export function build(d, { quality = "standard" } = {}) {
       if (!best) warnings.push(`region ${id}: no stocked melee size fits`);
       row = best ? best.stones : [];
     } else row = fill(rg.dia);
+    if (!row.length && rg.dia !== "auto") warnings.push(`region ${id}: no ${rg.dia} mm stones fit inside it on this band`);
     stones.push(...row);
     if (rg.setting === "bead") {
       const g = merged(beadsFor(d, geom, row, rg.bead));
@@ -404,6 +461,7 @@ export function build(d, { quality = "standard" } = {}) {
       paveDia = best ? best.dia : null;
       row = best ? best.stones : [];
     } else row = fill(d.pave.dia);
+    if (!row.length) warnings.push(d.pave.dia === "auto" ? "brushed pavé: no stocked melee size fits where you painted" : `brushed pavé: no ${d.pave.dia} mm stones fit where you painted`);
     stones.push(...row);
     if (d.pave.bead > 0) {
       const g = merged(beadsFor(d, geom, row, d.pave.bead));
@@ -411,5 +469,5 @@ export function build(d, { quality = "standard" } = {}) {
     }
   } else if (d.pave.dia === "auto") paveDia = null;
 
-  return { metal, stones, geom, design: d, paveDia, warnings };
+  return { metal, stones, geom, design: d, paveDia, warnings, colliders };
 }

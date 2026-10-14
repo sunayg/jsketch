@@ -23,3 +23,13 @@ export function sizeInRange(s) {
 export function formatSize(system, n) {
   return `${system}${n}`;
 }
+
+// The size in another system that is closest to an inside diameter (mm).
+const STEP = { US: 0.25, EU: 0.5, DE: 0.5, IT: 0.5, JP: 0.5 };
+export function sizeFromDiameter(system, d) {
+  const raw = system === "US" ? (d - 11.63) / 0.8128 : system === "EU" || system === "DE" ? d * Math.PI : d * Math.PI - 40;
+  const step = STEP[system];
+  const [lo, hi] = RANGE[system];
+  const n = Math.min(hi, Math.max(lo, Math.round(raw / step) * step));
+  return `${system}${+n.toFixed(2)}`;
+}

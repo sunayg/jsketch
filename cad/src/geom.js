@@ -38,8 +38,8 @@ export function openEdges(geo) {
   const n = idx ? idx.count : p.count;
   const weld = new Map();
   const id = (i) => {
-    // integer keys: avoids "-0.0000" vs "0.0000" at seams
-    const q = (v) => Math.round(v * 1e4) || 0;
+    // integer keys at 1 µm: welds seam vertices that differ by float noise
+    const q = (v) => Math.round(v * 1e3) || 0;
     const k = `${q(p.getX(i))},${q(p.getY(i))},${q(p.getZ(i))}`;
     let v = weld.get(k);
     if (v === undefined) weld.set(k, (v = weld.size));

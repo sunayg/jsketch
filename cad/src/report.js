@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { METALS } from "./script.js";
 import { CUTS, caratOf, isStockedMelee, outline } from "./gems.js";
 import { signedVolume, openEdges } from "./geom.js";
-import { shankThicknessAt } from "./build.js";
+import { shankThicknessAt, EDGE } from "./build.js";
 
 const FLUSH = new Set(["pave", "region", "stroke"]);
 
@@ -34,7 +34,7 @@ export function report(model) {
   const { ri, ro, width } = model.geom;
 
   // flush-set stones sit in drilled seats: take their pavilion out of the metal
-  const flush = model.stones.filter((s) => FLUSH.has(s.role) || (s.role === "accent" && Math.hypot(s.pos.x, s.pos.y) < ro + 0.01));
+  const flush = model.stones.filter((s) => FLUSH.has(s.role) || (s.role === "accent" && s.flush));
   const seatVolumeMm3 = flush.reduce((v, s) => v + (polyArea(outline(s.cut, s.dia, 0, 48)) * 0.43 * s.dia) / 3, 0);
 
   const partVolumes = new Map();
@@ -86,11 +86,52 @@ export function report(model) {
     const c = Math.abs((s.normal.x * s.pos.x + s.normal.y * s.pos.y) / r);
     return 0.43 * s.dia * c + (s.dia / 2) * Math.sqrt(Math.max(0, 1 - c * c));
   };
+  // floating metal: every part must touch the shank through a chain of parts
+  // (bounding boxes, slightly grown, must overlap; a coarse but useful test)
+  const boxes = model.metal.map((m) => {
+    m.geometry.computeBoundingBox();
+    return m.geometry.boundingBox.clone().expandByScalar(0.05);
+  });
+  const reached = new Set([0]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (let i = 0; i < boxes.length; i++) {
+      if (reached.has(i)) continue;
+      if ([...reached].some((j) => boxes[j].intersectsBox(boxes[i]))) reached.add(i), (grew = true);
+    }
+  }
+  const floating = model.metal.filter((_, i) => !reached.has(i));
+  for (const m of floating) checks.push({ level: "error", text: `${m.name} is not connected to the rest of the metal` });
+
+  // stones that run into prongs of another stone
+  const seg = (p, a, b) => {
+    const ab = b.clone().sub(a);
+    const t = ab.lengthSq() ? Math.max(0, Math.min(1, p.clone().sub(a).dot(ab) / ab.lengthSq())) : 0;
+    return a.clone().addScaledVector(ab, t).distanceTo(p);
+  };
+  let prongHits = 0;
+  for (const st of model.stones) {
+    const holder = st.role === "centre" ? "stone" : st.obj;
+    if (model.colliders?.some((c) => c.obj !== holder && c.obj.split("~")[0] !== holder && seg(st.pos, c.a, c.b) < c.r + (st.dia / 2) * 0.95)) prongHits++;
+  }
+  if (prongHits) checks.push({ level: "error", text: `${prongHits} stone(s) run into another stone's prongs` });
+
+  // band-set stones: metal under the culet, metal at the edge, and spacing
+  const set = model.stones.filter((s) => s.w !== undefined && (FLUSH.has(s.role) || s.flush));
+  const under = set.map((s) => shankThicknessAt(d, model.geom, s.w) - 0.43 * s.dia - 0.05);
+  const thinUnder = under.filter((v) => v < 0.3);
+  if (thinUnder.length) checks.push({ level: "warn", text: `${thinUnder.length} band-set stone(s) leave only ${Math.max(0, Math.min(...thinUnder)).toFixed(2)} mm of metal under the culet (aim for 0.3 mm or more)` });
+  const edgeLeft = set.map((s) => width / 2 - Math.abs(s.w) - s.dia / 2).filter((v) => v >= -0.01 && v < EDGE - 0.01);
+  if (edgeLeft.length) checks.push({ level: "warn", text: `${edgeLeft.length} band-set stone(s) leave under ${EDGE} mm of metal at the band edge (min ${Math.max(0, Math.min(...edgeLeft)).toFixed(2)} mm)` });
+  const gaps = [d.pave.gap, ...d.strokes.map((x) => x.gap), ...d.regions.map((x) => x.gap)];
+  if (set.length && gaps.some((g) => g < 0.05)) checks.push({ level: "warn", text: "A pavé gap under 0.05 mm leaves stones touching, with no room for beads or seats" });
+
   const bore = model.stones.filter((s) => Math.hypot(s.pos.x, s.pos.y) - inward(s) < ri - 1e-6);
   if (bore.length) checks.push({ level: "error", text: `${bore.length} stone(s) intrude into the finger bore` });
 
-  const onBand = model.stones.filter((s) => s.w !== undefined && s.role !== "centre");
-  const over = onBand.filter((s) => Math.abs(s.w) + (s.dia * (CUTS[s.cut].aspect > 1 ? 1 : 1)) / 2 > width / 2 + 0.01);
+  // only stones set into the band can overhang it; raised heads may be wider than the shank
+  const inBand = model.stones.filter((s) => FLUSH.has(s.role) || (s.role === "accent" && s.flush));
+  const over = inBand.filter((s) => Math.abs(s.w) + s.dia / 2 > width / 2 + 0.01);
   if (over.length) checks.push({ level: "error", text: `${over.length} stone(s) overhang the edge of the band` });
 
   // stones nothing holds: flush stones need beads, a channel or a bead setting
@@ -111,10 +152,7 @@ export function report(model) {
     }
   }
   if (overlaps) checks.push({ level: "error", text: `${overlaps} stone pair(s) overlap` });
-  if (d.stone.dia > width * 3) checks.push({ level: "warn", text: "Centre stone is very large for this band width" });
-  if (d.pave.dia === "auto" && model.paveDia == null) {
-    checks.push({ level: "warn", text: d.paint.length ? "Auto pavé found no stocked melee size that fits the painted area" : "Auto pavé has no painted area yet" });
-  }
+  if (d.stone.setting !== "none" && d.stone.dia > width * 3) checks.push({ level: "warn", text: "Centre stone is very large for this band width" });
   for (const w of model.warnings || []) checks.push({ level: "warn", text: w });
   if (!checks.length) checks.push({ level: "ok", text: "No warnings" });
 
@@ -132,7 +170,7 @@ export function report(model) {
     stones: stoneList,
     stoneCount: model.stones.length,
     totalCt,
-    centre: { cut: d.stone.cut, dia: d.stone.dia, length: d.stone.dia * c.aspect },
+    centre: d.stone.setting === "none" ? null : { cut: d.stone.cut, dia: d.stone.dia, length: d.stone.dia * c.aspect },
     checks,
     ok: !checks.some((x) => x.level === "error"),
   };

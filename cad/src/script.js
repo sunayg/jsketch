@@ -34,7 +34,7 @@ export const METALS = {
   copper: { label: "Copper", density: 8.96, color: "#c8744d" },
 };
 export const PROFILES = ["flat", "comfort", "domed"];
-export const SETTINGS = ["prong", "bezel", "illusion"];
+export const SETTINGS = ["prong", "bezel", "illusion", "none"]; // none: no centre stone
 export const TIPS = ["round", "pointed", "flat", "claw"];
 export const HALO_KINDS = ["single", "double", "hidden"];
 const YESNO = ["yes", "no"];
@@ -42,20 +42,20 @@ const YESNO = ["yes", "no"];
 export const LISTS = { accent: "accents", stroke: "strokes", region: "regions" };
 
 // command -> { key: [type, min, max] | [enum values] }
-const SCHEMA = {
+export const SCHEMA = {
   design: {},
   var: {},
   ring: { size: ["size"], diameter: ["num", 10, 30], metal: [Object.keys(METALS)], density: ["num", 1, 25] },
   shank: { width: ["num", 1, 12], thickness: ["num", 0.4, 5], profile: [PROFILES] },
-  stone: { cut: [Object.keys(CUTS)], dia: ["num", 1, 15], setting: [SETTINGS], prongs: ["num", 3, 8], tip: [TIPS] },
+  stone: { cut: [Object.keys(CUTS)], dia: ["num", 1, 15], setting: [SETTINGS], prongs: ["int", 3, 8], tip: [TIPS] },
   halo: { dia: ["num", 0.8, 3], gap: ["num", 0, 1], kind: [HALO_KINDS] },
   pave: { dia: ["numauto", 0.8, 3], gap: ["num", 0, 1], min: ["num", 0.8, 3], max: ["num", 0.8, 3], bead: ["num", 0, 0.8] },
   accent: {
     id: ["id"], cut: [Object.keys(CUTS)], dia: ["num", 1, 8], s: ["num", -200, 200], w: ["num", -10, 10],
-    setting: [["bezel", "prong", "flush"]], prongs: ["num", 3, 6], tip: [TIPS], mirror: [YESNO],
+    setting: [["bezel", "prong", "flush"]], prongs: ["int", 3, 6], tip: [TIPS], mirror: [YESNO],
   },
   stroke: {
-    id: ["id"], pts: ["pts"], dia: ["num", 0.8, 3], count: ["num", 1, 300], gap: ["num", 0, 1],
+    id: ["id"], pts: ["pts"], dia: ["num", 0.8, 3], count: ["int", 1, 300], gap: ["num", 0, 1],
     setting: [["bead", "channel", "none"]], bead: ["num", 0.2, 0.8], mirror: [YESNO],
   },
   region: {
@@ -102,7 +102,22 @@ function parsePts(val) {
 }
 
 // Split a line into tokens; {…} groups may contain spaces.
-const tokenize = (src) => src.match(/(?:[^\s{]|\{[^}]*\})+/g) || [];
+const tokenize = (src) => src.match(/(?:[^\s{]|\{[^}]*\}|\{[^}]*$)+/g) || [];
+
+// Drop a trailing "# comment", but not a # inside a quoted design name.
+function splitComment(raw) {
+  let q = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (c === "\\" && q) i++;
+    else if (c === '"') q = !q;
+    else if (c === "#" && !q) return [raw.slice(0, i), raw.slice(i)];
+  }
+  return [raw, ""];
+}
+const stripComment = (raw) => splitComment(raw)[0];
+const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+const escName = (n) => n.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
 export function parse(text) {
   const d = defaultDesign();
@@ -111,36 +126,45 @@ export function parse(text) {
   const errors = [];
   const seen = new Set();
   const lineOf = {};
+  let nonEmpty = false;
   const values = {}; // variable name -> number
   const err = (line, message) => errors.push({ line, message });
+  // where each variable is defined, to explain "used before defined"
+  const varLines = {};
+  text.split(/\r?\n/).forEach((raw, i) => {
+    const m = /^\s*var\s+([A-Za-z_]\w*)\s*=/.exec(stripComment(raw));
+    if (m && !(m[1] in varLines)) varLines[m[1]] = i + 1;
+  });
 
   // numeric value: plain number, or {expr}; returns { n, raw } or an error string
   const number = (val) => {
     try {
-      if (val.startsWith("{") && val.endsWith("}")) {
-        return { n: evalExpr(val.slice(1, -1), values), raw: val };
-      }
-      const n = Number(val);
-      if (!Number.isFinite(n) || val === "") return "must be a number";
-      return { n };
+      if (val.startsWith("{") && !val.endsWith("}")) return `has an unclosed "{" (write {expression})`;
+      if (val.startsWith("{")) return { n: evalExpr(val.slice(1, -1), values), raw: val };
+      if (!NUMBER.test(val)) return "must be a number";
+      return { n: Number(val) };
     } catch (e) {
+      const m = /Unknown variable "(\w+)"/.exec(e.message);
+      if (m && varLines[m[1]]) return `uses "${m[1]}" before it is defined on line ${varLines[m[1]]}; move that var line above`;
       return e.message;
     }
   };
 
   text.split(/\r?\n/).forEach((raw, i) => {
     const line = i + 1;
-    const src = raw.replace(/#.*$/, "").trim();
+    const src = stripComment(raw).trim();
     if (!src) return;
-    const nameMatch = /^design\s+"([^"]*)"\s*$/.exec(src);
+    const nameMatch = /^design\s+"((?:[^"\\]|\\.)*)"\s*$/.exec(src);
     if (nameMatch) {
-      d.name = nameMatch[1];
+      d.name = nameMatch[1].replace(/\\(.)/g, "$1");
+      nonEmpty = true;
       return;
     }
+    nonEmpty = true;
     const [cmd, ...rest] = tokenize(src);
 
     if (cmd === "var") {
-      const m = /^([A-Za-z_]\w*)=(.+)$/.exec(rest.join(" "));
+      const m = /^([A-Za-z_]\w*)\s*=\s*(.+)$/.exec(rest.join(" "));
       if (!m || rest.length < 1) return err(line, "var needs name=value, e.g. var band=1.8");
       if (m[1] === "pi" || Object.hasOwn(values, m[1])) return err(line, `"${m[1]}" is already defined`);
       const r = number(m[2].trim());
@@ -167,20 +191,27 @@ export function parse(text) {
       } else if (raw) d.exprs[`${cmd}.${key}`] = raw;
       else delete d.exprs[`${cmd}.${key}`];
     };
-    for (const tok of rest) {
+    const given = new Set();
+    for (const [ti, tok] of rest.entries()) {
       const eq = tok.indexOf("=");
       if (eq < 1) {
-        err(line, `Expected key=value, got "${tok}"`);
+        const prev = rest[ti - 1] || "";
+        err(line, prev.startsWith("size=") && NUMBER.test(tok) ? `write the size without a space, e.g. size=${prev.slice(5)}${tok}` : `Expected key=value, got "${tok}"`);
         continue;
       }
       const key = tok.slice(0, eq);
+      if (given.has(key)) {
+        err(line, `${key} is given twice`);
+        continue;
+      }
+      given.add(key);
       const val = tok.slice(eq + 1);
       const rule = spec[key];
       if (!rule) {
         err(line, `Unknown option "${key}" for ${cmd}`);
         continue;
       }
-      if (rule[0] === "num" || rule[0] === "numauto") {
+      if (rule[0] === "num" || rule[0] === "numauto" || rule[0] === "int") {
         if (rule[0] === "numauto" && val === "auto") {
           obj[key] = "auto";
           setExpr(key, null);
@@ -192,6 +223,7 @@ export function parse(text) {
         }
         const r = number(val);
         if (typeof r === "string") err(line, `${key} ${r}`);
+        else if (rule[0] === "int" && !Number.isInteger(r.n)) err(line, `${key} must be a whole number`);
         else if (r.n < rule[1] || r.n > rule[2]) err(line, `${key} must be between ${rule[1]} and ${rule[2]}`);
         else {
           obj[key] = r.n;
@@ -217,6 +249,10 @@ export function parse(text) {
       } else if (rule[0].includes(val)) obj[key] = val;
       else err(line, `${key} must be one of: ${rule[0].join(", ")}`);
     }
+    if (cmd === "ring" && given.has("diameter")) {
+      if (given.has("size")) err(line, "give either size= or diameter=, not both (diameter wins)");
+      else delete obj.size; // a diameter replaces the default size
+    }
     if (isList) {
       if (obj.id === undefined) return reported ? undefined : err(line, `${cmd} needs an id, e.g. ${cmd} id=${cmd}1`);
       const need = cmd === "region" ? 3 : cmd === "stroke" ? 2 : 0;
@@ -225,6 +261,7 @@ export function parse(text) {
     } else if (cmd === "paint") d.paint.push(obj);
     else d[cmd] = obj;
   });
+  if (!nonEmpty) errors.push({ line: 1, message: "The script is empty: start with a design line, or pick one from the gallery" });
   if (d.pave.min !== undefined && d.pave.max !== undefined && d.pave.min > d.pave.max) {
     errors.push({ line: lineOf.pave, message: "pave min must not exceed max" });
   }
@@ -247,7 +284,7 @@ export const setField = (d, cmd, key, value) => {
 };
 
 export function serialize(d) {
-  const out = [`design "${d.name}"`];
+  const out = [`design "${escName(d.name)}"`];
   for (const v of d.vars) out.push(`var ${v.name}=${v.raw}`);
   out.push(line("ring", d.ring, d.exprs), line("shank", d.shank, d.exprs), line("stone", d.stone, d.exprs));
   if (d.halo) out.push(line("halo", d.halo, d.exprs));
@@ -256,6 +293,61 @@ export function serialize(d) {
   for (const p of d.paint) out.push(line("paint", p));
   out.push(line("rule", d.rule, d.exprs));
   return out.join("\n") + "\n";
+}
+
+// Identity of a script line: one per command, per var name, per list id, per paint index.
+function lineKey(line, counters) {
+  const src = stripComment(line).trim();
+  if (!src) return null;
+  if (/^design\s/.test(src)) return "design";
+  const [cmd, ...rest] = tokenize(src);
+  if (cmd === "var") {
+    const m = /^([A-Za-z_]\w*)/.exec(rest.join(" "));
+    return m ? `var:${m[1]}` : null;
+  }
+  if (Object.hasOwn(LISTS, cmd)) {
+    const id = rest.find((t) => t.startsWith("id="))?.slice(3);
+    return id ? `${cmd}:${id}` : null;
+  }
+  if (cmd === "paint") return `paint:${(counters.paint = (counters.paint || 0) + 1)}`;
+  return cmd;
+}
+const sameTokens = (a, b) => {
+  const ta = tokenize(stripComment(a).trim()).sort().join(" ");
+  const tb = tokenize(b.trim()).sort().join(" ");
+  return ta === tb;
+};
+
+// Write a design back into existing script text, changing only the lines that
+// changed: comments, blank lines, line order and untouched lines survive.
+export function mergeText(oldText, d) {
+  const fresh = serialize(d).trimEnd().split("\n");
+  const fc = {};
+  const freshKeys = fresh.map((l) => lineKey(l, fc));
+  const index = new Map(freshKeys.map((k, i) => [k, i]));
+  const out = []; // { text, idx } idx = position in fresh, or -1 for comments
+  const used = new Set();
+  const oc = {};
+  for (const l of oldText.replace(/\n$/, "").split("\n")) {
+    const k = lineKey(l, oc);
+    if (k === null) {
+      out.push({ text: l, idx: -1 });
+      continue;
+    }
+    if (!index.has(k) || used.has(k)) continue; // removed (or a duplicate)
+    used.add(k);
+    const nl = fresh[index.get(k)];
+    const [, comment] = splitComment(l);
+    out.push({ text: sameTokens(l, nl) ? l : comment ? `${nl}  ${comment.trim()}` : nl, idx: index.get(k) });
+  }
+  // new lines go after the closest earlier line in canonical order
+  freshKeys.forEach((k, i) => {
+    if (used.has(k)) return;
+    let at = -1;
+    for (let j = 0; j < out.length; j++) if (out[j].idx >= 0 && out[j].idx < i) at = j;
+    out.splice(at + 1, 0, { text: fresh[i], idx: i });
+  });
+  return out.map((o) => o.text).join("\n").replace(/\n*$/, "\n");
 }
 
 const fromText = (text) => () => parse(text).design;

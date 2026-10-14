@@ -9,7 +9,7 @@ import { MELEE_SIZES } from "../src/gems.js";
 import { crc32 } from "../src/zip.js";
 import { crc32 as nodeCrc32 } from "node:zlib";
 import { signedVolume as vol } from "../src/build.js";
-import { parseSize } from "../src/sizes.js";
+import { parseSize, sizeFromDiameter } from "../src/sizes.js";
 import { build, signedVolume } from "../src/build.js";
 import { report } from "../src/report.js";
 
@@ -141,10 +141,18 @@ test("auto pavé picks a stocked size and fills the painted area", () => {
   assert.ok(m.stones.filter((s) => s.role === "pave").every((s) => s.dia === m.paveDia));
   const r = report(m);
   assert.equal(r.checks.some((c) => /stocked/.test(c.text)), false);
-  // nothing painted: auto has no size and says so
+  // nothing painted: no size and no noise
   const empty = report(build({ ...defaultDesign(), pave: { dia: "auto", gap: 0.15 } }));
   assert.equal(empty.paveDia, null);
-  assert.ok(empty.checks.some((c) => /no painted area/.test(c.text)));
+  assert.ok(empty.ok && empty.checks[0].level === "ok", JSON.stringify(empty.checks));
+  // painted, but the band is too narrow for any stocked size: say so
+  const narrow = defaultDesign();
+  narrow.shank.width = 1.2;
+  narrow.pave = { dia: "auto", gap: 0.15, min: 0.9, max: 2 };
+  narrow.paint.push({ s: 20, w: 0, r: 3 });
+  const nr = report(build(narrow));
+  assert.equal(nr.stoneCount, 1);
+  assert.ok(nr.checks.some((c) => /no stocked melee size fits/.test(c.text)), JSON.stringify(nr.checks));
 });
 
 test("stones in the finger bore are flagged", () => {
@@ -196,4 +204,12 @@ test("3MF package is a valid zip with a millimetre model", () => {
   // every triangle index is in range
   const nv = (model.match(/<vertex /g) || []).length;
   for (const mm of model.matchAll(/v1="(\d+)" v2="(\d+)" v3="(\d+)"/g)) assert.ok(+mm[1] < nv && +mm[2] < nv && +mm[3] < nv);
+});
+
+test("switching sizing system keeps the finger size", () => {
+  const d = parseSize("US6.5").innerDiameter;
+  assert.equal(sizeFromDiameter("EU", d), "EU53");
+  assert.equal(sizeFromDiameter("IT", d), "IT13");
+  assert.equal(sizeFromDiameter("US", parseSize("EU53").innerDiameter), "US6.5");
+  assert.equal(sizeFromDiameter("JP", d), "JP13");
 });

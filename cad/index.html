@@ -11,58 +11,184 @@
     <div id="app">
       <header>
         <strong>JewelScript CAD</strong>
-        <select id="template" aria-label="Template"></select>
+        <button id="open-gallery">Gallery</button>
+        <button id="open-assistant">Assistant</button>
+        <button id="open-palette" title="Command palette (Ctrl/Cmd+K)">Commands <kbd>⌘K</kbd></button>
         <span class="spacer"></span>
         <span id="rebuild" aria-live="polite"></span>
-        <label>Quality
-          <select id="quality"><option value="draft">Draft</option><option value="standard" selected>Standard</option><option value="fine">Fine</option></select>
-        </label>
-        <button id="export-stl">STL (metal)</button>
-        <button id="export-stones">STL (stones)</button>
-        <button id="export-3mf">3MF</button>
-        <button id="export-obj">OBJ</button>
-        <button id="export-glb">GLB</button>
+        <button id="undo" title="Undo (Ctrl/Cmd+Z)">Undo</button>
+        <button id="redo" title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
+        <label class="file">Import<input id="import" type="file" accept=".jws,.txt,.stl,.glb,.gltf,.obj,.svg" /></label>
+        <button id="open-export">Export</button>
+        <button id="open-sheet">Tech sheet</button>
         <button id="theme">Theme</button>
       </header>
+
       <section id="script-pane">
-        <label for="script">Design script</label>
-        <textarea id="script" spellcheck="false" autocomplete="off"></textarea>
-        <ul id="errors" aria-live="polite"></ul>
-        <details id="help">
-          <summary>Language</summary>
+        <div class="tabs" role="tablist">
+          <button role="tab" id="tab-script" aria-selected="true">Script</button>
+          <button role="tab" id="tab-objects" aria-selected="false">Objects</button>
+        </div>
+        <div id="script-view">
+          <textarea id="script" spellcheck="false" autocomplete="off" aria-label="Design script" wrap="soft"></textarea>
+          <ul id="errors" aria-live="polite"></ul>
+          <details id="help">
+            <summary>Language</summary>
 <pre>design "Name"
-var band=1.8          # then use {band} or {band*2}
+var band=1.8              # use as {band} or {band*2}
 ring size=US7|EU54|DE54|IT14|JP13
      (or diameter=17.35) metal=18k-yellow
-     (density=15.5 to override)
+     (density=15.5 overrides the alloy)
 shank width=3 thickness=1.8 profile=flat|comfort|domed
-stone cut=round|oval|marquise|pear|
-     princess|cushion|emerald
-     dia=6.5 setting=prong|bezel prongs=4
-halo dia=1.2 gap=0.1
-pave dia=1.3|auto gap=0.15 min=0.9 max=2
-paint s=0 w=0 r=2   # pavé brush (mm)
-rule min_wall=0.8 shrink=0   # shrink: % scale on export
-# comments start with #</pre>
-        </details>
-      </section>
-      <section id="viewport-pane">
-        <div id="viewport"></div>
-        <div id="viewport-bar">
-          <button id="paint-toggle" aria-pressed="false">Paint pavé</button>
-          <label>Brush <input id="brush" type="range" min="0.8" max="5" step="0.1" value="2" /></label>
-          <button id="undo-paint">Undo stroke</button>
-          <button id="clear-paint">Clear paint</button>
-          <span id="hint"></span>
+stone cut=round dia=6.5 setting=prong|bezel|illusion|none
+     prongs=4 tip=round|pointed|flat|claw
+halo dia=1.2 gap=0.1 kind=single|double|hidden
+accent id=side cut=pear dia=2.5 s=12 w=0
+     setting=bezel|prong|flush mirror=yes
+stroke id=row pts=8:0,20:0 dia=1.3 (or count=10)
+     gap=0.15 setting=bead|channel|none mirror=yes
+region id=z pts=8:-1,20:-1,20:1,8:1 dia=1.3|auto
+     min=0.9 max=1.5 setting=bead|none mirror=yes
+pave dia=1.3|auto gap=0.15 bead=0.35
+paint s=0 w=0 r=2          # brush stroke (mm)
+rule min_wall=0.8 shrink=0 # shrink: % on export
+# s = mm along the band from the top, w = across it
+# cuts: round oval marquise pear heart cushion princess
+#   emerald asscher radiant baguette tapered-baguette
+#   trillion hexagonal octagonal</pre>
+          </details>
+        </div>
+        <div id="objects-view" hidden>
+          <ul id="objects"></ul>
         </div>
       </section>
+
+      <section id="viewport-pane">
+        <div id="view-bar">
+          <span class="group" role="group" aria-label="View">
+            <button data-view="iso">Iso</button><button data-view="top">Top</button><button data-view="front">Front</button><button data-view="right">Right</button><button id="fit">Fit</button>
+          </span>
+          <span class="group" role="group" aria-label="Layout">
+            <button id="layout1" aria-pressed="true">1 view</button><button id="layout4" aria-pressed="false">4 views</button>
+          </span>
+          <label>Display
+            <select id="display"><option value="shaded">Shaded</option><option value="translucent">Translucent metal</option><option value="edges">Edges</option><option value="heat">Wall thickness</option></select>
+          </label>
+          <span id="heat-legend" hidden><i class="sw red"></i>under min <i class="sw amber"></i>near <i class="sw green"></i>fine</span>
+        </div>
+        <div id="viewport"></div>
+        <div id="viewport-bar">
+          <span class="group" role="group" aria-label="Tool">
+            <button data-tool="orbit" aria-pressed="true">Orbit</button>
+            <button data-tool="paint" aria-pressed="false" title="Brush pavé: drag over the band">Brush</button>
+            <button data-tool="stroke" aria-pressed="false" title="One row of stones along a drawn path">Stroke</button>
+            <button data-tool="outline" aria-pressed="false" title="Draw a closed outline to fill">Outline</button>
+            <button data-tool="wand" aria-pressed="false" title="Click to fill the band across its width">Wand</button>
+            <button data-tool="measure" aria-pressed="false" title="Click two points">Measure</button>
+          </span>
+          <label>Brush <input id="brush" type="range" min="0.8" max="5" step="0.1" value="2" /></label>
+          <label>Wand span <input id="wand-span" type="number" min="1" max="40" step="0.5" value="6" /></label>
+          <label>Snap
+            <select id="snap"><option value="0">Off</option><option value="0.25">0.25 mm</option><option value="0.5">0.5 mm</option><option value="1">1 mm</option></select>
+          </label>
+          <button id="clear-paint">Clear pavé</button>
+          <span id="hint" aria-live="polite"></span>
+        </div>
+      </section>
+
       <section id="side-pane">
         <h2>Parameters</h2>
-        <div id="params"></div>
+        <p id="params-note" class="note warn-note" hidden>The script has errors. Fix them, or Undo, to edit here.</p>
+        <fieldset id="params-set" class="plain"><div id="params"></div></fieldset>
         <h2>Tech sheet</h2>
         <div id="sheet"></div>
       </section>
     </div>
+
+    <dialog id="gallery-dialog" aria-labelledby="gallery-title">
+      <form method="dialog" class="dlg">
+        <h2 id="gallery-title">Gallery</h2>
+        <div class="row-inline">
+          <input id="gallery-search" type="search" placeholder="Search designs and components" aria-label="Search" />
+          <select id="gallery-kind" aria-label="Filter"><option value="all">All</option><option value="designs">Designs</option><option value="components">Components</option></select>
+        </div>
+        <ul id="gallery-list" class="cards"></ul>
+        <menu><button value="close">Close</button></menu>
+      </form>
+    </dialog>
+
+    <dialog id="assistant-dialog" aria-labelledby="assistant-title">
+      <form method="dialog" class="dlg">
+        <h2 id="assistant-title">Assistant</h2>
+        <p class="note">Rule-based, not an AI model: it understands sizes, metals, cuts, carats, prongs, halos, side stones, pavé, eternity and band sizes, and lists any words it did not use.</p>
+        <textarea id="assistant-input" rows="3" placeholder="A size 6.5 platinum solitaire with a 1 ct oval in six prongs"></textarea>
+        <div id="assistant-out" aria-live="polite"></div>
+        <menu><button value="close">Close</button><button id="assistant-apply" value="" class="primary">Apply</button></menu>
+      </form>
+    </dialog>
+
+    <dialog id="export-dialog" aria-labelledby="export-title">
+      <form method="dialog" class="dlg">
+        <h2 id="export-title">Export</h2>
+        <div class="row"><label for="ex-format">Format</label>
+          <select id="ex-format">
+            <option value="stl">STL metal (print and cast)</option>
+            <option value="stl-stones">STL stones</option>
+            <option value="3mf">3MF (metal + stones, mm)</option>
+            <option value="glb">GLB (web, AR)</option>
+            <option value="obj">OBJ (rendering)</option>
+            <option value="bundle">Bundle (.zip: script + meshes)</option>
+            <option value="sizerun">Size run (.zip of metal STLs)</option>
+          </select></div>
+        <div class="row"><label for="ex-part">Part</label><select id="ex-part"></select></div>
+        <div class="row"><label for="ex-quality">Mesh quality</label>
+          <select id="ex-quality"><option value="draft">Draft</option><option value="standard" selected>Standard</option><option value="fine">Fine</option></select></div>
+        <div class="row"><label for="ex-shrink">Shrinkage compensation %</label><input id="ex-shrink" type="number" min="0" max="5" step="0.1" /></div>
+        <fieldset id="ex-run" hidden><legend>Size run</legend>
+          <div class="row"><label for="ex-sys">System</label><select id="ex-sys"><option>US</option><option>EU</option><option>DE</option><option>IT</option><option>JP</option></select></div>
+          <div class="row"><label for="ex-from">From</label><input id="ex-from" type="number" step="0.5" value="5" /></div>
+          <div class="row"><label for="ex-to">To</label><input id="ex-to" type="number" step="0.5" value="8" /></div>
+          <div class="row"><label for="ex-step">Step</label><input id="ex-step" type="number" step="0.25" min="0.25" value="0.5" /></div>
+        </fieldset>
+        <p id="ex-note" class="note"></p>
+        <menu><button value="close">Cancel</button><button id="ex-go" value="" class="primary">Export</button></menu>
+      </form>
+    </dialog>
+
+    <dialog id="sheet-dialog" class="wide" aria-labelledby="sheet-title">
+      <form method="dialog" class="dlg">
+        <h2 id="sheet-title">Tech sheet</h2>
+        <div class="sheet-grid">
+          <div class="sheet-opts">
+            <fieldset><legend>Views</legend>
+              <label><input type="checkbox" name="view" value="top" checked /> Top</label>
+              <label><input type="checkbox" name="view" value="front" checked /> Front</label>
+              <label><input type="checkbox" name="view" value="side" checked /> Side</label>
+              <label><input type="checkbox" name="view" value="perspective" checked /> Perspective</label>
+            </fieldset>
+            <div class="row"><label for="ts-mode">Display</label>
+              <select id="ts-mode"><option value="shaded">Lit</option><option value="flat">Flat fill</option><option value="edges">Edges only</option><option value="translucent">Translucent metal</option></select></div>
+            <label><input id="ts-gemmap" type="checkbox" checked /> Gem map</label>
+            <div class="row"><label for="ts-density">House density g/cm³</label><input id="ts-density" type="number" step="0.01" min="1" max="25" placeholder="alloy default" /></div>
+            <div class="row"><label for="ts-logo">Logo</label><input id="ts-logo" type="file" accept="image/*" /></div>
+            <label for="ts-notes">Notes</label>
+            <textarea id="ts-notes" rows="3"></textarea>
+            <p class="note">Units follow the sidebar's unit choices.</p>
+            <menu class="left"><button id="ts-preview" value="">Preview</button><button id="ts-download" value="">Download HTML</button><button id="ts-print" value="">Print</button></menu>
+          </div>
+          <iframe id="ts-frame" title="Tech sheet preview"></iframe>
+        </div>
+        <menu><button value="close">Close</button></menu>
+      </form>
+    </dialog>
+
+    <dialog id="palette-dialog" aria-label="Command palette">
+      <form method="dialog" class="dlg palette">
+        <input id="palette-input" type="search" placeholder="Type a command…" aria-label="Command" autocomplete="off" />
+        <ul id="palette-list" role="listbox"></ul>
+      </form>
+    </dialog>
+
     <script type="module" src="./src/main.js"></script>
   </body>
 </html>
