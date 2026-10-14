@@ -198,6 +198,7 @@ export function report(model, exact = null) {
     if (info.speck && info.speck.mm < minWall && !(info.minWall && info.minWall.mm < minWall)) {
       checks.push({ level: "warn", text: `sculpt ${id} has tiny fins or flakes as thin as ${info.speck.mm.toFixed(2)} mm, e.g. at (${info.speck.at.map((v) => v.toFixed(2)).join(", ")}), too small to cast; smooth=1 or repair=voxel removes most of them` });
     }
+    if (info.trace) checks.push({ level: "info", text: `sculpt ${id}: band traced into ${info.trace.sections} smooth sections (${info.trace.points[0]}-${info.trace.points[1]} points each, within ${info.trace.maxError} mm of the mesh)${info.trace.headDegrees ? `; the head (${info.trace.headDegrees}° round the top) is kept as modelled` : ""}` });
     if (info.unscaled) checks.push({ level: "warn", text: `sculpt ${id} is ${Math.max(...info.sizeBeforeRepair).toFixed(1)} mm across, which does not look like millimetres: use fit=ring or set scale=` });
     if (info.cavities) checks.push({ level: "warn", text: `sculpt ${id} is hollow with ${info.cavities === 1 ? "a closed cavity" : `${info.cavities} closed cavities`}: add a vent or drain hole before casting or printing` });
     if (info.removedPieces && info.removedVolume > 0.05 * info.volume) checks.push({ level: "warn", text: `sculpt ${id}: removed ${info.removedPieces} loose piece(s), ${info.removedVolume} mm³ (${Math.round((100 * info.removedVolume) / info.volume)}% of what was kept); if that was meant to be part of the ring, use keep=all or join it to the rest` });

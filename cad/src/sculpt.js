@@ -4,6 +4,7 @@
 // when it already is one, otherwise by voxel remeshing), and can smooth,
 // hollow, symmetrize and simplify it.
 import { kernelModule } from "./kernel.js";
+import { fitBand, reshapeBand, rebuildRing } from "./contour.js";
 
 const BIG = 1e20;
 
@@ -643,6 +644,20 @@ export function prepareSculpt(soup, opts = {}, ctx = {}) {
     const s = man.simplify((info.voxel ?? 0.05) * 0.25);
     man.delete();
     man = s;
+  }
+  // trace the band into smooth sections (contour fitting); the head stays
+  if (o.trace === "band") {
+    if (o.fit !== "ring") throw new Error("trace=band needs fit=ring (the band is traced round the finger axis)");
+    if (o.hollow > 0) throw new Error("trace=band does not work with hollow= yet");
+    const fit = fitBand(man);
+    if (fit.sections.length < 8) throw new Error("trace=band: too little of this sculpt is a band to trace");
+    const { solid, band, head } = rebuildRing(man, reshapeBand(fit, { width: (o.band_w ?? 100) / 100, thickness: (o.band_t ?? 100) / 100 }));
+    band.delete();
+    head?.delete();
+    man.delete();
+    man = solid;
+    const span = fit.head ? ((fit.head.to - fit.head.from + 1) * 360) / fit.count : 0;
+    info.trace = { sections: fit.sections.length, points: [Math.min(...fit.sections.map((x) => x.ctrl.length)), Math.max(...fit.sections.map((x) => x.ctrl.length))], maxError: +fit.maxError.toFixed(3), headDegrees: Math.round(span) };
   }
   // a hollow with no way out: casting and printing need a vent or drain
   info.cavities = man.decompose().reduce((n, m) => {

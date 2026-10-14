@@ -275,6 +275,31 @@ function headWedge(fit, inset = 0) {
   return wedge;
 }
 
+// Reshape the traced band: width (along the finger) and thickness (out from
+// the bore, which stays put) as factors. Near the head the change fades out
+// over a few sections, so the band still meets the head as it was.
+export function reshapeBand(fit, { width = 1, thickness = 1 } = {}) {
+  if (width === 1 && thickness === 1) return fit;
+  const n = fit.count, step = TAU / n;
+  const fade = 6; // sections
+  const sections = fit.sections.map((sec) => {
+    let ramp = 1;
+    if (fit.head) {
+      const k = Math.round(sec.theta / step);
+      const d = Math.min(...[fit.head.from, fit.head.to].map((e) => Math.min(Math.abs(((k - e) % n + n) % n), Math.abs(((e - k) % n + n) % n))));
+      // nothing at all next to the head (the band reaches a slice into it)
+      ramp = Math.min(1, Math.max(0, (d - 1) / fade));
+    }
+    const w = 1 + (width - 1) * ramp, t = 1 + (thickness - 1) * ramp;
+    const pts = Array.from({ length: 64 }, (_, i) => splinePoint(sec.ctrl, i / 64));
+    const rIn = Math.min(...pts.map((p) => p[0]));
+    const zs = pts.map((p) => p[1]);
+    const zc = (Math.min(...zs) + Math.max(...zs)) / 2;
+    return { ...sec, ctrl: sec.ctrl.map(([r, z]) => [rIn + (r - rIn) * t, zc + (z - zc) * w]) };
+  });
+  return { ...fit, sections };
+}
+
 // The rebuilt ring: the traced band outside the head's wedge, and the
 // original's own material inside it (head, and whatever the band does under
 // the head, such as splitting into two rails). Returns { solid, band, head }.

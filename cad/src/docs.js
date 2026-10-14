@@ -36,7 +36,12 @@ sculpt id=ring src=ring.stl fit=ring at=US7 repair=auto
       at= is the size the sculpt was made for (set on import). At any other
       ring size it is resized as a jeweller would: the head lifts unchanged,
       the shank opens or closes, the bore stays round, and surfpave stones
-      move with the metal. Size runs work the same way and check each size. Use shank profile=none when the
+      move with the metal. Size runs work the same way and check each size.
+      trace=band (with fit=ring) traces the band slice by slice into smooth
+      sections that follow the mesh (within about 0.03 mm), so it can be
+      reshaped: band_w=80 makes it 80% as wide, band_t=120 20% thicker (the
+      bore stays put). The head, where slices show prongs or stones, is
+      kept as modelled and the change fades out next to it. Use shank profile=none when the
       sculpt is the whole ring (accents, strokes, regions and brushed pavé
       need a band; use surfpave on the sculpt instead).
 surfpave id=p on=ring pts=x:y:z,… r=1.5 dia=auto setting=bead mirror=yes

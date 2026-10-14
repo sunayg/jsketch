@@ -68,6 +68,9 @@ export const SCHEMA = {
     rx: ["num", -360, 360], ry: ["num", -360, 360], rz: ["num", -360, 360],
     repair: [["auto", "voxel", "none"]], voxel: ["num", 0.05, 0.5], close: ["int", 0, 10], smooth: ["int", 0, 5],
     keep: [["largest", "all"]], hollow: ["num", 0, 5], symmetrize: [["none", "x+", "x-"]], simplify: [YESNO],
+    // trace=band: the band is traced slice by slice into smooth sections
+    // (editable: band_w, band_t in % of the traced size); the head stays
+    trace: [["none", "band"]], band_w: ["num", 50, 200], band_t: ["num", 50, 200],
   },
   // pavé brushed onto a sculpt's surface: dabs are 3D points (mm)
   surfpave: {

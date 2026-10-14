@@ -46,3 +46,22 @@ test("the head is found, kept as it was, and the band is traced either side", ()
   assert.ok(Math.abs(solid.volume() / manifold.volume() - 1) < 0.02, `${solid.volume()} vs ${manifold.volume()}`);
   assert.equal(solid.decompose().length, 1, "one piece");
 });
+
+test("a sculpt with trace=band can be made wider, narrower or thicker; the head is untouched", async () => {
+  const { prepareSculpt: prep } = await import("../src/sculpt.js");
+  const prongs = [[-1.6, -1.6], [1.6, -1.6], [1.6, 1.6], [-1.6, 1.6]].map(([x, z]) => new THREE.CylinderGeometry(0.45, 0.5, 4, 16).translate(x, 12.6, z));
+  const soup = soupOf(new THREE.TorusGeometry(10, 1.4, 48, 160).scale(1, 1, 1.5), ...prongs);
+  const vol = (o) => {
+    const { manifold, info } = prep(soup, { fit: "ring", ...o }, { innerDiameter: 17.32 });
+    const top = manifold.boundingBox().max[1];
+    const r = { v: manifold.volume(), top, info };
+    manifold.delete();
+    return r;
+  };
+  const plain = vol({}), traced = vol({ trace: "band" }), narrow = vol({ trace: "band", band_w: 70 }), thick = vol({ trace: "band", band_t: 140 });
+  assert.ok(traced.info.trace.sections > 40);
+  assert.ok(Math.abs(traced.v / plain.v - 1) < 0.02, `${traced.v} vs ${plain.v}`);
+  assert.ok(narrow.v < traced.v * 0.85 && thick.v > traced.v * 1.15, `${narrow.v} ${traced.v} ${thick.v}`);
+  assert.ok(Math.abs(thick.top - plain.top) < 0.01 && Math.abs(narrow.top - plain.top) < 0.01, "the head stays where it was");
+  assert.throws(() => prep(soup, { trace: "band" }), /needs fit=ring/);
+});

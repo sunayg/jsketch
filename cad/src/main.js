@@ -419,19 +419,27 @@ function field(label, control) {
   return el("div", { className: "row" }, el("label", { htmlFor: control.id, textContent: label }), control);
 }
 // number field with the language's own range for this option
-function numField(label, cmd, obj, key, step) {
+// Set a field on a single command (ring, shank…) or on one list object
+// (a sculpt, an accent…), dropping any expression it had.
+function setAny(cmd, obj, key, v) {
+  if (cmd in LISTS) {
+    obj[key] = v;
+    if (obj.exprs) delete obj.exprs[key];
+  } else setField(design, cmd, key, v);
+}
+function numField(label, cmd, obj, key, step, fallback) {
   const [, min, max] = SCHEMA[cmd][key];
   const expr = cmd in LISTS ? obj.exprs?.[key] : design.exprs[`${cmd}.${key}`];
-  const i = el("input", { type: "number", min, max, step, value: obj[key], ariaLabel: label });
+  const i = el("input", { type: "number", min, max, step, value: obj[key] ?? fallback, ariaLabel: label });
   i.dataset.key = `${cmd}.${key}`;
   if (expr) i.title = `Set by ${expr}; typing a number replaces the expression`;
   i.addEventListener("change", () => {
     const v = +i.value;
     if (!(v >= min && v <= max) || (SCHEMA[cmd][key][0] === "int" && !Number.isInteger(v))) {
-      i.value = obj[key];
+      i.value = obj[key] ?? fallback;
       return say(`${label} must be ${SCHEMA[cmd][key][0] === "int" ? "a whole number " : ""}between ${min} and ${max}.`);
     }
-    setField(design, cmd, key, v);
+    setAny(cmd, obj, key, v);
     commit();
   });
   return field(expr ? `${label} ƒ` : label, i);
@@ -441,7 +449,7 @@ function selField(label, cmd, obj, key, options, labelOf = (o) => o) {
   s.dataset.key = `${cmd}.${key}`;
   for (const o of options) s.append(el("option", { value: o, textContent: labelOf(o), selected: o === (obj[key] ?? options[0]) }));
   s.addEventListener("change", () => {
-    setField(design, cmd, key, s.value);
+    setAny(cmd, obj, key, s.value);
     commit();
   });
   return field(label, s);
@@ -499,6 +507,11 @@ function renderParams() {
   root.append(
     selField("Metal", "ring", design.ring, "metal", Object.keys(METALS), (k) => METALS[k].label),
     ...(design.shank.profile !== "none" ? [numField("Band width (mm)", "shank", design.shank, "width", 0.1), numField("Band thickness (mm)", "shank", design.shank, "thickness", 0.1)] : []),
+    // sculpts: trace the band into smooth sections, then widen or thin it
+    ...design.sculpts.filter((sc) => sc.fit === "ring").flatMap((sc) => [
+      selField(`Trace band of ${sc.id}`, "sculpt", sc, "trace", ["none", "band"], (o) => (o === "band" ? "yes: smooth sections" : "no: keep the mesh")),
+      ...(sc.trace === "band" ? [numField(`${sc.id} band width (%)`, "sculpt", sc, "band_w", 5, 100), numField(`${sc.id} band thickness (%)`, "sculpt", sc, "band_t", 5, 100)] : []),
+    ]),
     selField("Band profile", "shank", design.shank, "profile", PROFILES, (o) => (o === "none" ? "none (sculpt is the ring)" : o)),
     selField("Centre setting", "stone", design.stone, "setting", SETTINGS, (o) => (o === "none" ? "none (plain band)" : o)),
   );
@@ -775,6 +788,7 @@ async function addSculpt() {
   if (num("sc-smooth")) sc.smooth = num("sc-smooth");
   if (num("sc-hollow")) sc.hollow = num("sc-hollow");
   if ($("sc-sym").value !== "none") sc.symmetrize = $("sc-sym").value;
+  if ($("sc-trace").checked && sc.fit === "ring" && !sc.hollow) sc.trace = "band";
   let dropped = 0;
   if ($("sc-whole").checked) {
     // the new sculpt is the whole ring: it replaces any earlier one
