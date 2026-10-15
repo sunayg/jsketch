@@ -179,9 +179,15 @@ function describe(levels) {
 // Rebuild a traced prong as a closed solid: its sections swept along its
 // centreline, with a domed (or flat) top and the bottom pushed down into the
 // metal below so it joins on. thickness scales the sections.
-export function prongSolid(prong, { thickness = 1, around = 20, sink = 0.3 } = {}) {
+export function prongSolid(prong, { thickness = 1, around = 20, sink = 0.3, extend = 0 } = {}) {
   const { Manifold, Mesh } = kernelModule();
   const pts = prong.spine.slice(), secs = prong.section.slice();
+  // reach a little past the last slice (a cutter must clear the whole prong)
+  if (extend > 0) {
+    const l = pts[pts.length - 1];
+    pts.push([l[0], l[1] + extend, l[2]]);
+    secs.push(secs[secs.length - 1]);
+  }
   // sink the bottom into the metal it stands on
   pts.unshift([pts[0][0], pts[0][1] - sink, pts[0][2]]);
   secs.unshift(secs[0]);
@@ -246,11 +252,19 @@ export function rebuildProngs(head, { bandTop, thickness = 1 } = {}) {
   if (!prongs.length) return { prongs, head };
   // take the original prongs out (a little wider than they are), then put
   // the rebuilt ones in
-  const cutters = prongs.map((p) => prongSolid(p, { thickness: 1.15, sink: 0 }));
+  const cutters = prongs.map((p) => prongSolid(p, { thickness: 1.25, sink: 0, extend: 0.3 }));
   const cut = Manifold.difference(head, Manifold.union(cutters));
   const built = prongs.map((p) => prongSolid(p, { thickness }));
-  const solid = Manifold.union([cut, ...built]);
+  let solid = Manifold.union([cut, ...built]);
   for (const c of [...cutters, ...built]) c.delete();
   cut.delete();
+  // crumbs the cutters left (the slanted top of a leaning prong)
+  const parts = solid.decompose();
+  const keep = parts.filter((m) => Math.abs(m.volume()) >= 0.05);
+  if (keep.length < parts.length) {
+    solid.delete();
+    solid = Manifold.compose(keep);
+  }
+  for (const m of parts) if (!keep.includes(m)) m.delete();
   return { prongs, head: solid };
 }
