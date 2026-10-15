@@ -260,7 +260,7 @@ export function bandSolid(fit, { around = 180, along = 64 } = {}) {
 }
 
 // The wedge of angles the head spans (a little wider), as a solid.
-function headWedge(fit, inset = 0) {
+export function headWedge(fit, inset = 0) {
   const { Manifold, CrossSection } = kernelModule();
   const a0 = ((fit.head.from - 0.5 + inset) / fit.count) * TAU, a1 = ((fit.head.to + 0.5 - inset) / fit.count) * TAU;
   const R = 200;
